@@ -181,6 +181,32 @@ and the API with:
 npm run dev:windows
 ```
 
+For the complete P0 development startup—including Docker checks, migrations,
+seed data, API, worker, and readiness verification—use the single Windows
+command:
+
+```powershell
+npm run dev:p0:windows
+```
+
+Docker Desktop must be installed. The script starts Docker Desktop when it can
+find the standard installation paths and waits up to two minutes for the Linux
+engine. If Docker Desktop is installed elsewhere, start it manually and wait
+until its status says the engine is running, then rerun the command.
+
+This starts the API and worker in separate PowerShell windows. It does not run
+the full test suite by default. To also run typecheck, unit tests, and build:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-p0-windows.ps1 -RunTests
+```
+
+If migrations and seed data are already current:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-p0-windows.ps1 -SkipDbSetup
+```
+
 The API remains in the foreground. To skip migrations and seed data:
 
 ```powershell

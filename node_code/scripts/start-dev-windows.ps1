@@ -32,19 +32,40 @@ function Invoke-External {
 }
 
 function Start-DockerDesktop {
-    & docker info *> $null
-    if ($LASTEXITCODE -eq 0) {
+    if (Test-DockerReady) {
         return
     }
 
+    $running = Get-Process -Name 'Docker Desktop' -ErrorAction SilentlyContinue
+    if ($running) { return }
+
     $candidates = @(
         (Join-Path ${env:ProgramFiles} 'Docker\Docker\Docker Desktop.exe'),
-        (Join-Path ${env:LOCALAPPDATA} 'Docker\Docker Desktop.exe')
-    ) | Where-Object { $_ -and (Test-Path $_) }
+        (Join-Path ${env:ProgramFiles(x86)} 'Docker\Docker\Docker Desktop.exe'),
+        (Join-Path ${env:LOCALAPPDATA} 'Docker\Docker Desktop.exe'),
+        (Join-Path ${env:LOCALAPPDATA} 'Docker\Docker\Docker Desktop.exe')
+    ) | Where-Object { $_ -and (Test-Path $_ -PathType Leaf) } | Select-Object -Unique
 
     if ($candidates.Count -gt 0) {
         Write-Step 'Starting Docker Desktop'
-        Start-Process -FilePath $candidates[0] | Out-Null
+        try {
+            Start-Process -FilePath $candidates[0] | Out-Null
+        } catch {
+            Write-Warning "Docker Desktop could not be started automatically from '$($candidates[0])'. Start it manually."
+        }
+    } else {
+        Write-Warning 'Docker Desktop executable was not found in standard paths. Start Docker Desktop manually, then this script will continue waiting for its engine.'
+    }
+}
+
+function Test-DockerReady {
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        & docker info 1>$null 2>$null
+        return ($LASTEXITCODE -eq 0)
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
     }
 }
 
@@ -72,8 +93,7 @@ Start-DockerDesktop
 Write-Step 'Waiting for Docker Desktop'
 $dockerReady = $false
 for ($attempt = 1; $attempt -le 60; $attempt++) {
-    & docker info *> $null
-    if ($LASTEXITCODE -eq 0) {
+    if (Test-DockerReady) {
         $dockerReady = $true
         break
     }

@@ -13,6 +13,7 @@
     "dev:worker": "tsx watch src/worker.ts",
     "dev:all": "./scripts/start-dev.sh",
     "dev:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-dev-windows.ps1",
+    "dev:p0:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-p0-windows.ps1",
     "start": "node dist/src/server.js",
     "start:worker": "node dist/src/worker.js",
     "test": "vitest run",
