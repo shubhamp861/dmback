@@ -1,0 +1,50 @@
+{
+  "name": "instagram-automation-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Backend service for the Instagram comment-to-DM automation tool",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/server.ts",
+    "dev:worker": "tsx watch src/worker.ts",
+    "dev:all": "./scripts/start-dev.sh",
+    "dev:windows": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-dev-windows.ps1",
+    "start": "node dist/src/server.js",
+    "start:worker": "node dist/src/worker.js",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:infra:up": "docker compose -f docker-compose.test.yml up -d --wait",
+    "test:infra:down": "docker compose -f docker-compose.test.yml down",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:migrate:status": "tsx scripts/migration-status.ts",
+    "db:seed": "tsx scripts/seed.ts",
+    "webhook:smoke": "tsx scripts/send-local-webhook.ts"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.3",
+    "@fastify/cors": "^10.0.2",
+    "@fastify/helmet": "^13.0.1",
+    "argon2": "^0.45.1",
+    "bullmq": "^5.58.5",
+    "dotenv": "^17.2.2",
+    "fastify": "^5.5.0",
+    "fastify-plugin": "^5.0.1",
+    "fastify-raw-body": "^5.0.0",
+    "ioredis": "^5.7.0",
+    "pg": "^8.16.3",
+    "zod": "^4.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "@types/pg": "^8.15.5",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}
