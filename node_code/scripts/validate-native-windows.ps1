@@ -47,6 +47,18 @@ function Get-UriPort {
     return $Uri.Port
 }
 
+function Invoke-Postgres {
+    param([string[]]$Arguments)
+
+    $previousPassword = $env:PGPASSWORD
+    try {
+        $env:PGPASSWORD = [Uri]::UnescapeDataString($databaseUri.UserInfo.Split(':', 2)[1])
+        Invoke-External $psql $Arguments
+    } finally {
+        $env:PGPASSWORD = $previousPassword
+    }
+}
+
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) { Fail 'npm is unavailable.' }
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) { Fail 'node is unavailable.' }
 
@@ -102,10 +114,11 @@ Write-Step 'Checking native Redis/Memurai TCP/service availability'
 Invoke-External $redisCli @('-h', $redisUri.Host, '-p', (Get-UriPort $redisUri).ToString(), '-n', '15', 'PING')
 
 Write-Step 'Checking PostgreSQL integration permissions and pgcrypto'
-Invoke-External $psql @($TestDatabaseUrl, '-v', 'ON_ERROR_STOP=1', '-tAc', 'CREATE EXTENSION IF NOT EXISTS pgcrypto; SELECT current_database();')
+$postgresArguments = @('-h', $databaseUri.Host, '-p', (Get-UriPort $databaseUri).ToString(), '-U', $databaseUri.UserInfo.Split(':', 2)[0], '-d', $databaseUri.AbsolutePath.TrimStart('/'), '-v', 'ON_ERROR_STOP=1')
+Invoke-Postgres ($postgresArguments + @('-tAc', 'CREATE EXTENSION IF NOT EXISTS pgcrypto; SELECT current_database();'))
 $schemaName = "native_validation_$([Guid]::NewGuid().ToString('N'))"
 $schemaSql = 'CREATE SCHEMA "' + $schemaName + '"; DROP SCHEMA "' + $schemaName + '" CASCADE;'
-Invoke-External $psql @($TestDatabaseUrl, '-v', 'ON_ERROR_STOP=1', '-c', $schemaSql)
+Invoke-Postgres ($postgresArguments + @('-c', $schemaSql))
 
 Write-Step 'Checking Redis/Memurai read/write, logical database 15, and Lua support'
 $key = "native-validation-$([Guid]::NewGuid().ToString('N'))"
