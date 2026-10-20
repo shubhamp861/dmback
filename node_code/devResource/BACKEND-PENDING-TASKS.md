@@ -217,7 +217,7 @@ separate verification.
   audit-failure rollback commands, scoped processing and stable queue ID checks.
 - Six real-service replay scenarios were added (14 integration cases total).
   Integration setup is blocked in automation by test PostgreSQL connection
-  refusal at 127.0.0.1:55432; migration/live replay behavior is NOT verified here.
+  refusal at the previous 127.0.0.1:55432 test port; migration/live replay behavior is NOT verified here.
   Apply the migration and run the dedicated integration suite on Windows.
 - Remaining: bounded time-range/bulk replay, rate limits, audit/status API or
   operator UI, real Redis restart/process-signal tests, and a successful live
@@ -376,8 +376,47 @@ management, and audit recording remain pending.
 
 ## P0-007 — Finish API contract and request controls
 
-**Status:** `[ ] Pending`  
+**Status:** `[~] Error/request contract, idempotency, and Redis rate limits implemented; pagination/OpenAPI pending`
 **Dependencies:** P0-006
+
+### Update — 2026-10-20
+
+- JSON errors include `code`, `message`, and a locally generated `requestId`;
+  validation errors also include `fields`.
+- Parser/content errors map to `INVALID_JSON` (400), `INVALID_CONTENT_TYPE`
+  (415), and `PAYLOAD_TOO_LARGE` (413). Signed webhook raw-body and challenge
+  text behavior remain unchanged.
+- Caller `x-request-id` values are ignored. Production request logging uses the
+  generated correlation ID and Fastify's current `logController` API.
+- Added strict optional `Idempotency-Key` support and migration
+  `003_idempotency_keys.sql`. Automation create/status and webhook replay POSTs
+  can replay the stored response for the same workspace/user/key/fingerprint;
+  different or in-progress reuse returns 409 and invalid keys return 400.
+  Handler failures abandon in-progress records.
+- Idempotency records are workspace/user scoped and store status, fingerprint,
+  and response body. Do not place secrets in response bodies; retention cleanup
+  is not implemented yet.
+- Targeted P0-007 tests passed (25 tests). After updating migration discovery
+  for migration 003, the full suite should contain 307 passing tests.
+- Still pending: OpenAPI generation/versioning, cursor pagination, rate-limit
+  policy expansion, idempotency retention cleanup, broader request/CORS coverage,
+  and CI/live migration verification.
+
+### Rate-limit update — 2026-10-20
+
+- Added a separate lazy Redis connection and atomic fixed-window Lua counter;
+  queue Redis ownership remains unchanged.
+- Authenticated routes consume independent user and workspace buckets. Public
+  authentication endpoints use an IP bucket, and signed Instagram deliveries
+  use a webhook IP bucket. Health endpoints are excluded.
+- Limited responses return `429 RATE_LIMITED` with `RateLimit-Limit`,
+  `RateLimit-Remaining`, and `Retry-After` headers. Limiter Redis failures are
+  fail-open so durable webhook persistence is not converted into data loss.
+- Settings are configurable with `RATE_LIMIT_*` environment values. Defaults
+  are 20 auth-IP requests, 120 webhook-IP requests, 120 user requests, and 300
+  workspace requests per 60-second window.
+- Focused route tests passed (2); typecheck passed. Real Redis integration
+  verification should be rerun with `npm run test:integration`.
 
 ### Work
 
@@ -387,7 +426,7 @@ management, and audit recording remain pending.
 - Add cursor pagination to list endpoints.
 - Add `Idempotency-Key` support to state-changing POST endpoints.
 - Add per-user and per-IP rate limits, with stricter webhook protection where
-  appropriate.
+  appropriate. **Implemented 2026-10-20; policy expansion remains open.**
 - Add content-type, body-size, CORS, and origin tests.
 - Update README examples so authenticated mutation requests include cookies and
   CSRF headers.
@@ -417,7 +456,7 @@ management, and audit recording remain pending.
 - Safeguards require a database ending `_test` and Redis DB `/15`; random SQL
   schemas/queue prefixes prevent collision, and cleanup never flushes Redis.
 - Typecheck/build and 206 unit/HTTP-double tests passed. Integration execution
-  failed during setup with `ECONNREFUSED 127.0.0.1:55432`; test services/Docker
+  previously failed during setup with `ECONNREFUSED 127.0.0.1:55432`; test services/Docker
   are unavailable in the automation environment. These real-service scenarios
   are implemented but NOT recorded as passed. Run the README Windows commands.
 - Still pending: successful live suite/CI receipt, real server restart/failover

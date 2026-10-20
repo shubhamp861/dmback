@@ -5,7 +5,7 @@ describe('integration test isolation safeguards', () => {
   it('never uses developer DATABASE_URL or REDIS_URL as fallbacks', () => {
     const connections = testConnections({ DATABASE_URL: 'postgres://localhost/development', REDIS_URL: 'redis://localhost/0' });
     expect(new URL(connections.databaseUrl).pathname).toBe('/instagram_automation_test');
-    expect(new URL(connections.databaseUrl).port).toBe('55432');
+    expect(new URL(connections.databaseUrl).port).toBe('15432');
     expect(new URL(connections.redisUrl).port).toBe('56379');
     expect(new URL(connections.redisUrl).pathname).toBe('/15');
   });

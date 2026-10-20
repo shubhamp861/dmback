@@ -310,7 +310,11 @@ describe('real PostgreSQL, Redis, Fastify and worker integration', () => {
     for (const response of [await requestReplay(own.id, other), await requestReplay(mixed.id),
       await requestReplay(unknown.id), await requestReplay(randomUUID())]) {
       expect(response.statusCode).toBe(404);
-      expect(response.json()).toEqual({ code: 'NOT_FOUND', message: 'Replayable webhook event not found' });
+      expect(response.json()).toMatchObject({
+        code: 'NOT_FOUND',
+        message: 'Replayable webhook event not found',
+        requestId: expect.any(String)
+      });
     }
     expect((await context.database.pool.query('SELECT count(*)::int AS total FROM webhook_replays')).rows).toEqual(before.rows);
     expect((await context.database.pool.query('SELECT count(*)::int AS total FROM audit_log')).rows).toEqual(auditBefore.rows);

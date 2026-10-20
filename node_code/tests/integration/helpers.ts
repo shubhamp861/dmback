@@ -57,8 +57,9 @@ export async function redisProxy(targetUrl: string) {
 
 export function testConnections(environment: NodeJS.ProcessEnv = process.env) {
   // Never fall back to DATABASE_URL/REDIS_URL from the developer's .env.
+  const testPostgresPort = environment.TEST_POSTGRES_PORT ?? '15432';
   const databaseUrl = environment.TEST_DATABASE_URL
-    ?? 'postgres://integration:integration-only@127.0.0.1:55432/instagram_automation_test';
+    ?? `postgres://integration:integration-only@127.0.0.1:${testPostgresPort}/instagram_automation_test`;
   const redisUrl = environment.TEST_REDIS_URL ?? 'redis://127.0.0.1:56379/15';
   const parsedDb = new URL(databaseUrl);
   if (!['postgres:', 'postgresql:'].includes(parsedDb.protocol) || !/^\/[a-zA-Z0-9_]+_test$/.test(parsedDb.pathname)) {

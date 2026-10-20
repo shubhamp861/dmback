@@ -1,27 +1,39 @@
 import Fastify from 'fastify';
+import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rawBody from 'fastify-raw-body';
 import type { Config } from './config.js';
+import type { LogController as LogControllerType } from 'fastify';
 import { AuthService } from './auth.js';
 import { Database } from './db.js';
 import { InstagramOAuthService } from './instagram/oauth.js';
 import { BullMqEventQueue } from './queue.js';
+import { RedisRateLimiter } from './rate-limit.js';
 import { registerRoutes } from './routes.js';
 import { registerHealthRoutes } from './health.js';
-import { registerSafeErrorHandlers, safeError, safeLoggerOptions } from './logging.js';
+import { registerSafeErrorHandlers, safeError, safeLoggerOptions, withRequestId } from './logging.js';
 
 export function buildApp(config: Config) {
+  // Fastify 5.5 exposes LogController as the non-deprecated replacement for
+  // disableRequestLogging. It is loaded from the installed Fastify package so
+  // the runtime's instanceof check uses the same class as Fastify itself.
+  const { LogController } = createRequire(import.meta.url)('fastify/lib/log-controller.js') as {
+    LogController: new (options: { disableRequestLogging: boolean }) => LogControllerType;
+  };
   const app = Fastify({
     logger: safeLoggerOptions(config.LOG_LEVEL),
-    disableRequestLogging: true,
+    logController: new LogController({ disableRequestLogging: true }),
     // Generate correlation IDs locally; arbitrary client headers may contain secrets.
     requestIdHeader: false,
+    genReqId: () => randomUUID(),
     bodyLimit: 1024 * 1024
   });
   const database = new Database(config.DATABASE_URL);
   const queue = new BullMqEventQueue(config, (error) => app.log.error({ err: safeError(error) }, 'Redis producer error'));
+  const rateLimiter = new RedisRateLimiter(config);
   database.pool.on('error', (error) => app.log.error({ err: safeError(error) }, 'Database pool error'));
   const auth = new AuthService(database);
   const instagramOAuth = new InstagramOAuthService(database, config);
@@ -36,14 +48,28 @@ export function buildApp(config: Config) {
     routes: ['/v1/webhooks/instagram']
   });
   registerSafeErrorHandlers(app);
-  app.register(registerRoutes, { config, database, queue, auth, instagramOAuth });
+  app.addHook('onSend', async (request, reply, payload) => {
+    if (reply.statusCode < 400 || !payload) return payload;
+    const contentType = reply.getHeader('content-type');
+    if (typeof contentType !== 'string' || !contentType.toLowerCase().startsWith('application/json')) return payload;
+    try {
+      return JSON.stringify(withRequestId(JSON.parse(String(payload)), request.id));
+    } catch {
+      return payload;
+    }
+  });
+  app.register(registerRoutes, { config, database, queue, auth, instagramOAuth, rateLimiter });
   app.register(registerHealthRoutes, { database, queue, timeoutMs: config.READINESS_TIMEOUT_MS ?? 2000 });
 
   app.addHook('onClose', async () => {
     try {
       await queue.close();
     } finally {
-      await database.close();
+      try {
+        await rateLimiter.close();
+      } finally {
+        await database.close();
+      }
     }
   });
 

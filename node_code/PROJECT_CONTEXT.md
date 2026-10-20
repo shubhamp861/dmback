@@ -2,6 +2,42 @@
 
 ## Latest implementation update — 2026-10-19
 
+### P0 API contract/idempotency follow-up — 2026-10-20
+
+Started P0-007 in the renamed Windows project `node_code`. Added standardized
+JSON error behavior: generated local request IDs, `code`/`message` with optional
+`fields`/`requestId`, stable JSON/content-type/body-limit errors, raw webhook
+preservation, and Fastify 5 `logController` request logging.
+
+Added durable optional `Idempotency-Key` support for authenticated automation
+create/status and webhook replay POSTs. Migration `003_idempotency_keys.sql`
+stores workspace/user fingerprints and completed response bodies; matching
+requests replay, different/in-progress requests conflict, and handler failures
+abandon records. Keys are printable ASCII 1–128 characters. Do not put secrets
+in response bodies. Retention cleanup is pending.
+
+Targeted P0-007 tests passed: 25. Full suite reached 306 passed and one stale
+migration-discovery assertion failed because migration 003 was newly present;
+the assertion was updated afterward and the full suite must be rerun. Remaining
+P0-007 work: pagination, OpenAPI, retention cleanup, broader request/CORS
+coverage, and CI/live migration verification.
+
+### Rate-limit follow-up — 2026-10-20
+
+Added `src/rate-limit.ts` with a separate lazy ioredis connection and an atomic
+fixed-window Lua counter. Authenticated routes use independent user/workspace
+buckets; authentication endpoints use an IP bucket; signed Instagram delivery
+uses a webhook IP bucket. Limited responses return `429 RATE_LIMITED` with
+`RateLimit-Limit`, `RateLimit-Remaining`, and `Retry-After`. Redis limiter errors
+fail open so webhook persistence remains durable. Configure thresholds with the
+`RATE_LIMIT_*` environment variables shown in `.env.example`.
+
+Focused tests passed and the full local suite now passes 309 tests across 24
+files. Typecheck, build, and diff checks passed. The automation environment
+cannot currently reach the Windows disposable PostgreSQL service on
+`127.0.0.1:15432`; rerun `npm run test:integration` after starting the Windows
+test infrastructure to verify the new limiter against real Redis.
+
 ### Audited webhook replay follow-up
 
 Added Owner/Admin + CSRF endpoint `POST /v1/webhook-events/:id/replay` and
@@ -21,7 +57,7 @@ current live rules, not historical snapshots, and never resends a message.
 Current checks passed: 293 unit/HTTP-double tests across 20 files, typecheck,
 build, tracked diff whitespace check. Added six replay integration scenarios
 (14 real-service cases total); setup remains blocked here by ECONNREFUSED on
-test PostgreSQL port 55432. Do not claim live migration/replay/CI passed.
+test PostgreSQL port 15432 by default. Do not claim live migration/replay/CI passed.
 An old migration-discovery assertion was updated for migration 002. Fastify
 injection cold start now initializes in a bounded setup hook; actual assertion
 timeouts remain unchanged. No dependency installations or Linux services used.
@@ -54,12 +90,12 @@ Added `backend/docker-compose.test.yml`, `vitest.integration.config.ts`, and
 `tests/integration/` with a dedicated `npm run test:integration` command. The
 test targets never fall back to developer connection settings: dedicated test
 database name ending `_test`, Redis DB `/15`, random schema/queue prefix, and
-separate local ports 55432/56379. Worker processing was extracted to
+separate local ports 15432/56379 by default. Worker processing was extracted to
 `backend/src/processing.ts` and is used by both the worker and tests.
 CI now has PostgreSQL/Redis service containers for integration tests.
 
 Latest checks: typecheck/build and 206 unit/HTTP-double tests passed. Integration
-setup failed with `ECONNREFUSED 127.0.0.1:55432`; Docker/test services are not
+setup previously failed with `ECONNREFUSED 127.0.0.1:55432`; Docker/test services are not
 available to the automation runtime. No live integration/CI pass is claimed.
 Windows next step: `npm run test:infra:up`, `npm run test:integration`, then
 `npm run test:infra:down` from the backend directory. No Linux services installed.

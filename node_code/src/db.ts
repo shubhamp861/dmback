@@ -5,6 +5,12 @@ import type { AutomationForMatching } from './domain/automation.js';
 import type { InstagramWebhookPayload } from './instagram/webhook.js';
 import { extractCommentEvents, instagramWebhookSchema } from './instagram/webhook.js';
 import { MATCH_COMMENT_QUEUE } from './queue.js';
+import {
+  IdempotencyStore,
+  type BeginIdempotencyInput,
+  type BeginIdempotencyResult,
+  type IdempotencyBody
+} from './idempotency.js';
 
 const { Pool } = pg;
 
@@ -51,6 +57,7 @@ export interface AutomationRecord extends AutomationForMatching {
 
 export class Database {
   readonly pool: pg.Pool;
+  private readonly idempotency: IdempotencyStore;
 
   constructor(databaseUrl: string) {
     this.pool = new Pool({
@@ -60,6 +67,7 @@ export class Database {
       statement_timeout: 5000,
       idle_in_transaction_session_timeout: 10000
     });
+    this.idempotency = new IdempotencyStore(this.pool);
   }
 
   async close(): Promise<void> {
@@ -68,6 +76,22 @@ export class Database {
 
   async healthcheck(): Promise<void> {
     await this.pool.query('SELECT 1');
+  }
+
+  async beginIdempotency(input: BeginIdempotencyInput): Promise<BeginIdempotencyResult> {
+    return this.idempotency.beginIdempotency(input);
+  }
+
+  async completeIdempotency(id: string, statusCode: number, body: IdempotencyBody): Promise<void> {
+    return this.idempotency.completeIdempotency(id, statusCode, body);
+  }
+
+  async abandonIdempotency(id: string): Promise<void> {
+    return this.idempotency.abandonIdempotency(id);
+  }
+
+  async failIdempotency(id: string): Promise<void> {
+    return this.idempotency.failIdempotency(id);
   }
 
   async insertWebhookEvent(payload: InstagramWebhookPayload, payloadHash: string): Promise<WebhookEventRecord> {

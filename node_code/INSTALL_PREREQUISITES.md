@@ -330,7 +330,7 @@ npm run build
 ```
 
 For the Windows Docker integration suite, start its separate disposable test
-services (ports 55432 and 56379), run tests, then stop them:
+services (ports 15432 and 56379 by default), run tests, then stop them:
 
 ```cmd
 npm run test:infra:up

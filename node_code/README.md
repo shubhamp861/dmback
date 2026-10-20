@@ -384,6 +384,33 @@ hand BullMQ a sanitized error before its diagnostic persistence. Existing stored
 errors are not rewritten. Avoid free-form sensitive log strings in future code;
 redaction is not a universal scanner for arbitrary nested/string content.
 
+### P0 API request contract
+
+JSON errors include `code`, `message`, and a generated `requestId`; validation
+errors also include `fields`. Stable request/parser errors are `INVALID_JSON`
+(400), `INVALID_CONTENT_TYPE` (415), and `PAYLOAD_TOO_LARGE` (413). The signed
+webhook keeps its raw-body path and the webhook challenge remains plain text.
+
+Authenticated state-changing POSTs accept an optional `Idempotency-Key`. Keys
+must contain 1–128 printable ASCII characters without whitespace. Automation
+create/status and webhook replay currently support it. A repeated key for the
+same workspace/user and request fingerprint replays the stored status/body
+without running the mutation again. A different or in-progress request returns
+409; invalid keys return 400. Handler failures abandon the in-progress record.
+Apply migration `003_idempotency_keys.sql` before using this behavior. Do not
+put secrets in response bodies because completed responses are persisted for
+replay. Cursor pagination, retention cleanup, and OpenAPI generation remain
+pending.
+
+Redis-backed rate limits apply to authenticated routes and use independent
+user/workspace buckets. Authentication endpoints use an IP bucket, while signed
+Instagram deliveries use a webhook IP bucket. Limited requests return HTTP 429
+with `RATE_LIMITED`, `RateLimit-Limit`, `RateLimit-Remaining`, and
+`Retry-After`. The default 60-second limits are 20 auth-IP requests, 120
+webhook-IP requests, 120 user requests, and 300 workspace requests. Configure
+them with `RATE_LIMIT_*` environment variables. Limiter Redis failures fail
+open so webhook persistence remains durable during Redis outages.
+
 ## Local API testing
 
 Use a cookie file outside the repository so session and CSRF cookies are not
@@ -459,10 +486,27 @@ npm run test:integration
 npm run test:infra:down
 ```
 
+The same Windows sequence, including cleanup even when the test fails, is
+available as:
+
+```cmd
+npm run test:integration:windows
+```
+
+If the default PostgreSQL port is reserved, pass an alternate port:
+
+```cmd
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-integration-windows.ps1 -PostgresPort 15433
+```
+
 These commands use `docker-compose.test.yml`, **not** the development Compose
-file. Test PostgreSQL listens on `127.0.0.1:55432` and Redis on
+file. Test PostgreSQL listens on `127.0.0.1:15432` by default and Redis on
 `127.0.0.1:56379`. Test storage is disposable; no development bind mounts are
 attached. The API and normal worker do not need to be stopped.
+If Windows reserves the default PostgreSQL port, set the same alternate port
+for Compose and the test process, for example
+`set TEST_POSTGRES_PORT=15433` and
+`set TEST_DATABASE_URL=postgres://integration:integration-only@127.0.0.1:15433/instagram_automation_test`.
 
 The integration suite uses real SQL, Fastify HTTP injection and a real BullMQ
 worker to check:
