@@ -125,8 +125,10 @@ $key = "native-validation-$([Guid]::NewGuid().ToString('N'))"
 Invoke-External $redisCli @('-h', $redisUri.Host, '-p', (Get-UriPort $redisUri).ToString(), '-n', '15', 'SET', $key, 'ok', 'EX', '60')
 $value = (& $redisCli -h $redisUri.Host -p (Get-UriPort $redisUri).ToString() -n 15 GET $key).Trim()
 if ($LASTEXITCODE -ne 0 -or $value -ne 'ok') { Fail 'Redis/Memurai read-back validation failed.' }
-$luaResult = (& $redisCli -h $redisUri.Host -p (Get-UriPort $redisUri).ToString() -n 15 EVAL 'return redis.call("PING")' 0).Trim()
-if ($LASTEXITCODE -ne 0 -or $luaResult -ne 'PONG') { Fail 'Redis/Memurai Lua validation failed.' }
+$luaResult = (& $redisCli --raw -h $redisUri.Host -p (Get-UriPort $redisUri).ToString() -n 15 EVAL "return redis.call('PING')" 0 2>&1 | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $luaResult -ne 'PONG') {
+    Fail "Redis/Memurai Lua validation failed. Server response: $luaResult"
+}
 Invoke-External $redisCli @('-h', $redisUri.Host, '-p', (Get-UriPort $redisUri).ToString(), '-n', '15', 'DEL', $key)
 
 if (-not $SkipProjectChecks) {
