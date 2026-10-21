@@ -19,8 +19,21 @@ in response bodies. Retention cleanup is pending.
 Targeted P0-007 tests passed: 25. Full suite reached 306 passed and one stale
 migration-discovery assertion failed because migration 003 was newly present;
 the assertion was updated afterward and the full suite must be rerun. Remaining
-P0-007 work: pagination, OpenAPI, retention cleanup, broader request/CORS
-coverage, and CI/live migration verification.
+P0-007 work: OpenAPI, retention cleanup, broader request/CORS coverage, and
+CI/live migration verification.
+
+### Cursor-pagination follow-up — 2026-10-21
+
+Added versioned opaque base64url cursors and keyset pagination for Instagram
+accounts, automations, and automation trigger events. Requests support
+`limit=1..100` with a default of 50; results use stable
+`created_at DESC, id DESC` ordering and return `pagination.nextCursor` plus
+`pagination.hasMore`. Cursors are bound to resource and workspace/automation
+scope. Migration `004_cursor_pagination.sql` adds supporting indexes.
+
+Focused pagination, authorization, rate-limit, and migration tests pass. Native
+integration coverage now exercises multi-page automation and trigger-event
+queries and should be rerun through `npm run validate:native:windows`.
 
 ### Rate-limit follow-up — 2026-10-20
 

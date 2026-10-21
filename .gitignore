@@ -1,0 +1,3 @@
+# Workspace-private agent/browser artifacts. These are generated attachments,
+# extracted PDF pages, and temporary inbox files; they are not project source.
+.opencode/omnirush/inbox/

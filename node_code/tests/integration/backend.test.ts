@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.js';
 import { BullMqEventQueue, MATCH_COMMENT_QUEUE, type MatchCommentJob } from '../../src/queue.js';
 import { dispatchWebhookOutbox, dispatchWebhookReplays, processWebhookEvent, processWebhookReplay } from '../../src/processing.js';
+import { parsePaginationQuery } from '../../src/pagination.js';
 import { createIntegrationContext, eventually } from './helpers.js';
 
 describe('real PostgreSQL, Redis, Fastify and worker integration', () => {
@@ -204,6 +205,68 @@ describe('real PostgreSQL, Redis, Fastify and worker integration', () => {
     expect((await context.database.getAutomation(automationId, owner.workspaceId))?.status).toBe('live');
     const rows = await context.database.pool.query('SELECT count(*)::int AS total FROM automations');
     expect(rows.rows[0].total).toBe(1);
+  });
+
+  it('paginates automation and trigger-event lists with stable timestamp/id cursors', async () => {
+    const paginationWorkspaceId = randomUUID();
+    const paginationAccountId = randomUUID();
+    const paginationAutomationIds = [randomUUID(), randomUUID(), randomUUID()];
+    await context.database.pool.query('INSERT INTO workspaces(id, name) VALUES ($1, $2)', [paginationWorkspaceId, 'Pagination workspace']);
+    await context.database.pool.query(
+      `INSERT INTO ig_accounts(id, workspace_id, ig_user_id, username, status)
+       VALUES ($1, $2, $3, 'pagination-account', 'active')`,
+      [paginationAccountId, paginationWorkspaceId, `pagination-${randomUUID()}`]
+    );
+    for (const [index, id] of paginationAutomationIds.entries()) {
+      await context.database.pool.query(
+        `INSERT INTO automations(id, ig_account_id, name, status, keyword_rules, created_at, updated_at)
+         VALUES ($1, $2, $3, 'live', '[]', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+        [id, paginationAccountId, `Pagination ${index}`]
+      );
+    }
+
+    const firstAutomations = await context.database.listAutomations(paginationWorkspaceId, { limit: 2 });
+    expect(firstAutomations.items).toHaveLength(2);
+    expect(firstAutomations.hasMore).toBe(true);
+    expect(firstAutomations.nextCursor).toBeTruthy();
+    const automationCursor = parsePaginationQuery(
+      { cursor: firstAutomations.nextCursor }, 'automations', paginationWorkspaceId
+    ).cursor;
+    if (!automationCursor) throw new Error('Expected an automation pagination cursor');
+    const secondAutomations = await context.database.listAutomations(paginationWorkspaceId, {
+      limit: 2, cursor: automationCursor
+    });
+    expect(secondAutomations.items).toHaveLength(1);
+    expect(secondAutomations.hasMore).toBe(false);
+    expect(firstAutomations.items.map((row) => row.id).filter((id) => secondAutomations.items.some((row) => row.id === id))).toHaveLength(0);
+
+    for (let index = 0; index < 3; index += 1) {
+      expect(await context.database.insertTriggerEvent({
+        igAccountId: paginationAccountId,
+        automationId: paginationAutomationIds[0]!,
+        workspaceId: paginationWorkspaceId,
+        commentId: `pagination-comment-${index}-${randomUUID()}`,
+        commentText: 'pagination',
+        outcome: 'queued'
+      })).toBe(true);
+    }
+    await context.database.pool.query(
+      `UPDATE trigger_events SET created_at = '2026-01-01T00:00:00Z'
+       WHERE automation_id = $1`, [paginationAutomationIds[0]]
+    );
+    const firstEvents = await context.database.listTriggerEvents(paginationAutomationIds[0]!, paginationWorkspaceId, { limit: 2 });
+    expect(firstEvents.items).toHaveLength(2);
+    expect(firstEvents.hasMore).toBe(true);
+    const eventCursor = parsePaginationQuery(
+      { cursor: firstEvents.nextCursor }, 'trigger-events', paginationAutomationIds[0]!
+    ).cursor;
+    if (!eventCursor) throw new Error('Expected a trigger-event pagination cursor');
+    const secondEvents = await context.database.listTriggerEvents(paginationAutomationIds[0]!, paginationWorkspaceId, {
+      limit: 2, cursor: eventCursor
+    });
+    expect(secondEvents.items).toHaveLength(1);
+    expect(secondEvents.hasMore).toBe(false);
+    expect(firstEvents.items.map((row) => row.id).filter((id) => secondEvents.items.some((row) => row.id === id))).toHaveLength(0);
   });
 
   it('reads the current membership role from SQL and rejects viewer mutations', async () => {

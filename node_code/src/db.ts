@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { pageFromRows, type CursorPage, type PaginationOptions } from './pagination.js';
 import pg from 'pg';
 import type { PoolClient } from 'pg';
 import type { AutomationForMatching } from './domain/automation.js';
@@ -401,15 +402,33 @@ export class Database {
     return result.rows[0];
   }
 
-  async listInstagramAccounts(workspaceId: string): Promise<InstagramAccountRecord[]> {
-    const result = await this.pool.query<InstagramAccountRecord>(
-      `SELECT id, workspace_id AS "workspaceId", ig_user_id AS "igUserId", username,
-              account_type AS "accountType", profile_picture_url AS "profilePictureUrl",
-              permissions, status, token_expires_at AS "tokenExpiresAt"
-       FROM ig_accounts WHERE workspace_id = $1 ORDER BY created_at DESC`,
-      [workspaceId]
+  async listInstagramAccounts(workspaceId: string): Promise<InstagramAccountRecord[]>;
+  async listInstagramAccounts(workspaceId: string, options: PaginationOptions): Promise<CursorPage<InstagramAccountRecord>>;
+  async listInstagramAccounts(workspaceId: string, options?: PaginationOptions): Promise<InstagramAccountRecord[] | CursorPage<InstagramAccountRecord>> {
+    const result = await this.pool.query<InstagramAccountRecord & { __cursorCreatedAt?: Date }>(
+      options
+        ? `SELECT id, workspace_id AS "workspaceId", ig_user_id AS "igUserId", username,
+                  account_type AS "accountType", profile_picture_url AS "profilePictureUrl",
+                  permissions, status, token_expires_at AS "tokenExpiresAt",
+                  created_at AS "__cursorCreatedAt"
+           FROM ig_accounts
+           WHERE workspace_id = $1
+             AND ($2::timestamptz IS NULL OR created_at < $2::timestamptz
+                  OR (created_at = $2::timestamptz AND id < $3::uuid))
+           ORDER BY created_at DESC, id DESC
+           LIMIT $4`
+        : `SELECT id, workspace_id AS "workspaceId", ig_user_id AS "igUserId", username,
+                  account_type AS "accountType", profile_picture_url AS "profilePictureUrl",
+                  permissions, status, token_expires_at AS "tokenExpiresAt"
+           FROM ig_accounts WHERE workspace_id = $1 ORDER BY created_at DESC, id DESC`,
+      options ? [workspaceId, options.cursor?.createdAt ?? null, options.cursor?.id ?? null, options.limit + 1] : [workspaceId]
     );
-    return result.rows;
+    if (!options) return result.rows;
+    const page = pageFromRows(result.rows, options, 'instagram-accounts', workspaceId, '__cursorCreatedAt');
+    return {
+      ...page,
+      items: page.items.map(({ __cursorCreatedAt: _createdAt, ...account }) => account)
+    };
   }
 
   async markWebhookProcessed(eventId: string): Promise<void> {
@@ -542,30 +561,58 @@ export class Database {
     return result.rows[0] as Record<string, unknown> | undefined;
   }
 
-  async listAutomations(workspaceId: string): Promise<Record<string, unknown>[]> {
+  async listAutomations(workspaceId: string): Promise<Record<string, unknown>[]>;
+  async listAutomations(workspaceId: string, options: PaginationOptions): Promise<CursorPage<Record<string, unknown>>>;
+  async listAutomations(workspaceId: string, options?: PaginationOptions): Promise<Record<string, unknown>[] | CursorPage<Record<string, unknown>>> {
     const result = await this.pool.query(
-      `SELECT a.* FROM automations a
-       JOIN ig_accounts account ON account.id = a.ig_account_id
-       WHERE account.workspace_id = $1
-       ORDER BY a.created_at DESC`,
-      [workspaceId]
+      options
+        ? `SELECT a.* FROM automations a
+           JOIN ig_accounts account ON account.id = a.ig_account_id
+           WHERE account.workspace_id = $1
+             AND ($2::timestamptz IS NULL OR a.created_at < $2::timestamptz
+                  OR (a.created_at = $2::timestamptz AND a.id < $3::uuid))
+           ORDER BY a.created_at DESC, a.id DESC
+           LIMIT $4`
+        : `SELECT a.* FROM automations a
+           JOIN ig_accounts account ON account.id = a.ig_account_id
+           WHERE account.workspace_id = $1
+           ORDER BY a.created_at DESC, a.id DESC`,
+      options ? [workspaceId, options.cursor?.createdAt ?? null, options.cursor?.id ?? null, options.limit + 1] : [workspaceId]
     );
-    return result.rows as Record<string, unknown>[];
+    const rows = result.rows as Record<string, unknown>[];
+    return options ? pageFromRows(rows, options, 'automations', workspaceId) : rows;
   }
 
-  async listTriggerEvents(automationId: string, workspaceId: string): Promise<Record<string, unknown>[]> {
+  async listTriggerEvents(automationId: string, workspaceId: string): Promise<Record<string, unknown>[]>;
+  async listTriggerEvents(automationId: string, workspaceId: string, options: PaginationOptions): Promise<CursorPage<Record<string, unknown>>>;
+  async listTriggerEvents(automationId: string, workspaceId: string, options?: PaginationOptions): Promise<Record<string, unknown>[] | CursorPage<Record<string, unknown>>> {
     const result = await this.pool.query(
-      `SELECT events.id, events.ig_account_id, events.automation_id, events.comment_id, events.comment_text,
-              events.matched_keyword, events.outcome, events.reason_code, events.attempts,
-              events.created_at, events.sent_at
-       FROM trigger_events events
-       JOIN automations a ON a.id = events.automation_id
-       JOIN ig_accounts account ON account.id = a.ig_account_id
-       WHERE events.automation_id = $1 AND account.workspace_id = $2
-       ORDER BY events.created_at DESC`,
-      [automationId, workspaceId]
+      options
+        ? `SELECT events.id, events.ig_account_id, events.automation_id, events.comment_id, events.comment_text,
+                  events.matched_keyword, events.outcome, events.reason_code, events.attempts,
+                  events.created_at, events.sent_at
+           FROM trigger_events events
+           JOIN automations a ON a.id = events.automation_id
+           JOIN ig_accounts account ON account.id = a.ig_account_id
+           WHERE events.automation_id = $1 AND account.workspace_id = $2
+             AND ($3::timestamptz IS NULL OR events.created_at < $3::timestamptz
+                  OR (events.created_at = $3::timestamptz AND events.id < $4::uuid))
+           ORDER BY events.created_at DESC, events.id DESC
+           LIMIT $5`
+        : `SELECT events.id, events.ig_account_id, events.automation_id, events.comment_id, events.comment_text,
+                  events.matched_keyword, events.outcome, events.reason_code, events.attempts,
+                  events.created_at, events.sent_at
+           FROM trigger_events events
+           JOIN automations a ON a.id = events.automation_id
+           JOIN ig_accounts account ON account.id = a.ig_account_id
+           WHERE events.automation_id = $1 AND account.workspace_id = $2
+           ORDER BY events.created_at DESC, events.id DESC`,
+      options
+        ? [automationId, workspaceId, options.cursor?.createdAt ?? null, options.cursor?.id ?? null, options.limit + 1]
+        : [automationId, workspaceId]
     );
-    return result.rows as Record<string, unknown>[];
+    const rows = result.rows as Record<string, unknown>[];
+    return options ? pageFromRows(rows, options, 'trigger-events', automationId) : rows;
   }
 
   async updateAutomationStatus(id: string, workspaceId: string, status: 'live' | 'paused'): Promise<Record<string, unknown> | undefined> {

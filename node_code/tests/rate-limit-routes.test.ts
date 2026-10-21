@@ -76,7 +76,7 @@ describe('rate-limited routes', () => {
     try {
       const response = await app.inject({ method: 'GET', url: '/v1/automations', headers: headers() });
       expect(response.statusCode).toBe(200);
-      expect(database.listAutomations).toHaveBeenCalledWith(workspaceId);
+      expect(database.listAutomations).toHaveBeenCalledWith(workspaceId, { limit: 50 });
     } finally {
       await app.close();
     }

@@ -411,6 +411,34 @@ webhook-IP requests, 120 user requests, and 300 workspace requests. Configure
 them with `RATE_LIMIT_*` environment variables. Limiter Redis failures fail
 open so webhook persistence remains durable during Redis outages.
 
+### Cursor pagination
+
+The list endpoints support opaque keyset cursors:
+
+```text
+GET /v1/ig-accounts?limit=50&cursor=<opaque-cursor>
+GET /v1/automations?limit=50&cursor=<opaque-cursor>
+GET /v1/automations/:id/events?limit=50&cursor=<opaque-cursor>
+```
+
+`limit` defaults to 50 and accepts values from 1 through 100. Results are
+ordered by `created_at DESC, id DESC` and the response includes:
+
+```json
+{
+  "data": [],
+  "pagination": {
+    "nextCursor": null,
+    "hasMore": false
+  }
+}
+```
+
+Cursors are bound to their resource and workspace/automation scope. Invalid,
+cross-resource, or cross-scope cursors return `400 INVALID_CURSOR`. Pagination
+uses keyset queries rather than offset scans, so inserts before the current
+cursor do not shift later pages.
+
 ## Local API testing
 
 Use a cookie file outside the repository so session and CSRF cookies are not

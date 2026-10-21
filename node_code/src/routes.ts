@@ -12,6 +12,7 @@ import type { EventQueue } from './queue.js';
 import { QUEUE_DISPATCH_FAILURE, safeError } from './logging.js';
 import { fingerprintJson, isValidIdempotencyKey } from './idempotency.js';
 import { NoopRateLimiter, type RateLimiter } from './rate-limit.js';
+import { PaginationError, type CursorPage, parsePaginationQuery, type PaginationOptions } from './pagination.js';
 
 interface RouteDependencies {
   config: Config;
@@ -243,14 +244,20 @@ export async function registerRoutes(app: FastifyInstance, dependencies: RouteDe
     const context = await requireAuth(request, reply, auth, 'accounts:read');
     if (!context) return;
     if (!await enforceAuthenticatedRateLimit(request, reply, rateLimiter, config, context)) return;
-    return reply.send({ data: await database.listInstagramAccounts(context.workspaceId) });
+    const pagination = parseRoutePagination(request.query, 'instagram-accounts', context.workspaceId, reply);
+    if (!pagination) return;
+    const page = normalizePage(await database.listInstagramAccounts(context.workspaceId, pagination), pagination);
+    return reply.send({ data: page.items, pagination: { nextCursor: page.nextCursor, hasMore: page.hasMore } });
   });
 
   app.get('/v1/automations', async (request, reply) => {
     const context = await requireAuth(request, reply, auth, 'automations:read');
     if (!context) return;
     if (!await enforceAuthenticatedRateLimit(request, reply, rateLimiter, config, context)) return;
-    return reply.send({ data: await database.listAutomations(context.workspaceId) });
+    const pagination = parseRoutePagination(request.query, 'automations', context.workspaceId, reply);
+    if (!pagination) return;
+    const page = normalizePage(await database.listAutomations(context.workspaceId, pagination), pagination);
+    return reply.send({ data: page.items, pagination: { nextCursor: page.nextCursor, hasMore: page.hasMore } });
   });
 
   app.post('/v1/automations', async (request, reply) => {
@@ -302,7 +309,10 @@ export async function registerRoutes(app: FastifyInstance, dependencies: RouteDe
     if (!params.success) return reply.code(400).send({ code: 'INVALID_ID', message: 'Invalid automation id' });
     const automation = await database.getAutomation(params.data.id, context.workspaceId);
     if (!automation) return reply.code(404).send({ code: 'NOT_FOUND', message: 'Automation not found' });
-    return reply.send({ data: await database.listTriggerEvents(params.data.id, context.workspaceId) });
+    const pagination = parseRoutePagination(request.query, 'trigger-events', params.data.id, reply);
+    if (!pagination) return;
+    const page = normalizePage(await database.listTriggerEvents(params.data.id, context.workspaceId, pagination), pagination);
+    return reply.send({ data: page.items, pagination: { nextCursor: page.nextCursor, hasMore: page.hasMore } });
   });
 
   for (const action of ['publish', 'pause', 'resume'] as const) {
@@ -340,6 +350,27 @@ function getRawBody(request: FastifyRequest): Buffer {
   const rawBody = (request as FastifyRequest & { rawBody?: Buffer }).rawBody;
   if (!rawBody) throw new Error('Raw request body was not configured');
   return rawBody;
+}
+
+function parseRoutePagination(
+  query: unknown,
+  resource: 'instagram-accounts' | 'automations' | 'trigger-events',
+  scopeId: string,
+  reply: { code: (status: number) => { send: (body: unknown) => unknown } }
+): PaginationOptions | undefined {
+  try {
+    return parsePaginationQuery(query, resource, scopeId);
+  } catch (error) {
+    if (!(error instanceof PaginationError)) throw error;
+    reply.code(400).send({ code: error.code, message: error.message });
+    return undefined;
+  }
+}
+
+function normalizePage<T>(result: T[] | CursorPage<T>, _options: PaginationOptions): CursorPage<T> {
+  return Array.isArray(result)
+    ? { items: result, nextCursor: null, hasMore: false }
+    : result;
 }
 
 async function enforceAuthenticatedRateLimit(

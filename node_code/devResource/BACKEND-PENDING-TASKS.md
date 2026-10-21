@@ -376,7 +376,7 @@ management, and audit recording remain pending.
 
 ## P0-007 — Finish API contract and request controls
 
-**Status:** `[~] Error/request contract, idempotency, and Redis rate limits implemented; pagination/OpenAPI pending`
+**Status:** `[~] Error/request contract, idempotency, and rate limits implemented; cursor pagination implemented; OpenAPI pending`
 **Dependencies:** P0-006
 
 ### Update — 2026-10-20
@@ -398,9 +398,23 @@ management, and audit recording remain pending.
   is not implemented yet.
 - Targeted P0-007 tests passed (25 tests). After updating migration discovery
   for migration 003, the full suite should contain 307 passing tests.
-- Still pending: OpenAPI generation/versioning, cursor pagination, rate-limit
-  policy expansion, idempotency retention cleanup, broader request/CORS coverage,
-  and CI/live migration verification.
+- Still pending: OpenAPI generation/versioning, rate-limit policy expansion,
+  idempotency retention cleanup, broader request/CORS coverage, and CI/live
+  migration verification.
+
+### Cursor-pagination update — 2026-10-21
+
+- Added opaque versioned base64url cursors bound to resource and scope.
+- Added `limit` validation with a default of 50 and maximum of 100.
+- Added keyset pagination to `/v1/ig-accounts`, `/v1/automations`, and
+  `/v1/automations/:id/events`, ordered by `created_at DESC, id DESC`.
+- Responses now include `data` plus `pagination.nextCursor` and
+  `pagination.hasMore`.
+- Invalid, cross-resource, and cross-scope cursors return `400 INVALID_CURSOR`.
+- Added migration `004_cursor_pagination.sql` with supporting indexes.
+- Focused pagination/authorization/migration tests pass; native integration
+  pagination coverage is added and should be rerun with the Windows validation
+  command.
 
 ### Rate-limit update — 2026-10-20
 
@@ -423,7 +437,7 @@ management, and audit recording remain pending.
 - Generate OpenAPI from Zod/shared schemas.
 - Publish a versioned OpenAPI document for frontend client generation.
 - Standardize error responses as `code`, `message`, `fields`, and `requestId`.
-- Add cursor pagination to list endpoints.
+- Add cursor pagination to list endpoints. **Implemented 2026-10-21.**
 - Add `Idempotency-Key` support to state-changing POST endpoints.
 - Add per-user and per-IP rate limits, with stricter webhook protection where
   appropriate. **Implemented 2026-10-20; policy expansion remains open.**

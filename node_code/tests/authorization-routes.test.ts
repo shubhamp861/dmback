@@ -142,10 +142,10 @@ describe('workspace boundaries', () => {
           headers: headers(), ...(endpoint.method === 'POST' ? { payload: { ...input, workspaceId: foreignId } } : {}) });
         expect(response.statusCode).toBe(endpoint.status);
       }
-      expect(database.listInstagramAccounts).toHaveBeenCalledWith(workspaceId);
-      expect(database.listAutomations).toHaveBeenCalledWith(workspaceId);
+      expect(database.listInstagramAccounts).toHaveBeenCalledWith(workspaceId, { limit: 50 });
+      expect(database.listAutomations).toHaveBeenCalledWith(workspaceId, { limit: 50 });
       expect(database.getAutomation).toHaveBeenCalledWith(automationId, workspaceId);
-      expect(database.listTriggerEvents).toHaveBeenCalledWith(automationId, workspaceId);
+      expect(database.listTriggerEvents).toHaveBeenCalledWith(automationId, workspaceId, { limit: 50 });
       expect(database.createAutomation).toHaveBeenCalledWith(expect.objectContaining({ workspaceId, igAccountId: accountId }));
       expect(database.updateAutomationStatus.mock.calls).toEqual([
         [automationId, workspaceId, 'live'], [automationId, workspaceId, 'paused'], [automationId, workspaceId, 'live']
