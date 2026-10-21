@@ -324,6 +324,102 @@ JSON.
 }
 ```
 
+### Email-verification OTP signup
+
+The recommended signup flow is a three-step sequence. The legacy
+`POST /v1/auth/signup` endpoint remains available for existing clients.
+
+#### `POST /v1/auth/signup/request-otp`
+
+Request:
+
+```json
+{ "email": "person@example.com" }
+```
+
+The email is trimmed and normalized to lowercase. The response is intentionally
+the same whether the address is new, already registered, or currently inside the
+resend cooldown; the endpoint never reveals account existence.
+
+```http
+202 Accepted
+```
+
+```json
+{ "data": { "accepted": true } }
+```
+
+For a new address, the development provider records an email containing a
+six-digit OTP. OTPs are stored only as challenge-bound hashes, expire after 10
+minutes, allow at most five attempts, and have a 60-second resend cooldown.
+Production mail delivery is not configured by this backend.
+
+#### `POST /v1/auth/signup/verify-otp`
+
+Request:
+
+```json
+{ "email": "person@example.com", "otp": "123456" }
+```
+
+On a valid, unexpired, not-yet-consumed code:
+
+```http
+200 OK
+```
+
+```json
+{ "data": { "verificationToken": "opaque-token" } }
+```
+
+The returned token expires after 10 minutes and can be consumed only once by the
+complete step. Invalid, expired, exhausted, reused, and duplicate-email attempts
+use the same generic OTP failure response where applicable:
+
+```http
+400 Bad Request
+```
+
+```json
+{ "code": "INVALID_SIGNUP_OTP", "message": "The verification code is invalid or expired" }
+```
+
+#### `POST /v1/auth/signup/complete`
+
+Request:
+
+```json
+{
+  "verificationToken": "opaque-token",
+  "password": "at-least-12-characters",
+  "workspaceName": "My workspace"
+}
+```
+
+`workspaceName` is optional and defaults to `My workspace`; `password` must be
+12–256 characters. On success the verified user, owner membership, workspace,
+and existing cookie session are created atomically:
+
+```http
+201 Created
+```
+
+```json
+{
+  "data": {
+    "id": "user-uuid",
+    "email": "person@example.com",
+    "workspaceId": "workspace-uuid",
+    "role": "owner"
+  }
+}
+```
+
+The response sets the existing `session` (HttpOnly) and `csrf_token` cookies;
+their JSON values are never returned. Invalid or replayed tokens return
+`400 INVALID_VERIFICATION_TOKEN`; a duplicate email at completion returns
+`409 EMAIL_TAKEN`.
+
 ### `POST /v1/auth/login`
 
 #### Request
@@ -1258,6 +1354,21 @@ function csrfHeaders(): HeadersInit {
 
 ```ts
 const authApi = {
+  signupRequestOtp: (email: string) =>
+    apiRequest<ApiResponse<{ accepted: boolean }>>('/v1/auth/signup/request-otp', {
+      method: 'POST',
+      body: JSON.stringify({ email })
+    }),
+  signupVerifyOtp: (email: string, otp: string) =>
+    apiRequest<ApiResponse<{ verificationToken: string }>>('/v1/auth/signup/verify-otp', {
+      method: 'POST',
+      body: JSON.stringify({ email, otp })
+    }),
+  signupComplete: (verificationToken: string, password: string, workspaceName?: string) =>
+    apiRequest<ApiResponse<AuthUser>>('/v1/auth/signup/complete', {
+      method: 'POST',
+      body: JSON.stringify({ verificationToken, password, ...(workspaceName ? { workspaceName } : {}) })
+    }),
   signup: (input: SignupInput) =>
     apiRequest<ApiResponse<AuthUser>>('/v1/auth/signup', {
       method: 'POST',
@@ -1314,7 +1425,7 @@ const workspaceApi = {
 | --- | --- |
 | App boot/auth restore | `GET /v1/auth/me` |
 | Login | `POST /v1/auth/login` |
-| Signup/onboarding | `POST /v1/auth/signup` |
+| Signup/onboarding | `POST /v1/auth/signup/request-otp` → `POST /v1/auth/signup/verify-otp` → `POST /v1/auth/signup/complete` |
 | Logout menu | `POST /v1/auth/logout` |
 | Forgot password request | `POST /v1/auth/reset/request` |
 | Reset password page | `POST /v1/auth/reset/confirm` |
@@ -1342,9 +1453,13 @@ Loading -> GET /v1/auth/me
 ### Signup
 
 ```text
-Signup form -> POST /v1/auth/signup
+Signup email -> POST /v1/auth/signup/request-otp
+  202 -> show generic “If eligible, a code was sent” state
+OTP form -> POST /v1/auth/signup/verify-otp
+  200 -> keep verificationToken in memory and show password/workspace form
+Signup completion -> POST /v1/auth/signup/complete
   201 -> browser has session + csrf_token cookies; show workspace app
-  400 -> render field errors
+  400 -> render validation/invalid-code errors
   409 -> show email already registered
 ```
 

@@ -1,7 +1,16 @@
 import argon2 from 'argon2';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import type { Database } from './db.js';
+import { FakeEmailProvider, type EmailProvider } from './email.js';
+import {
+  generateSignupOtp,
+  hashSignupOtp,
+  SIGNUP_OTP_EXPIRY_MINUTES,
+  SIGNUP_OTP_MAX_ATTEMPTS,
+  SIGNUP_OTP_RESEND_COOLDOWN_SECONDS,
+  SIGNUP_VERIFICATION_TOKEN_MINUTES
+} from './email-verification.js';
 
 const SESSION_DAYS = 30;
 const RESET_TOKEN_MINUTES = 30;
@@ -27,7 +36,10 @@ export interface SessionCredentials {
 }
 
 export class AuthService {
-  constructor(private readonly database: Database) {}
+  constructor(
+    private readonly database: Database,
+    private readonly emailProvider: EmailProvider = new FakeEmailProvider()
+  ) {}
 
   async signup(input: { email: string; password: string; workspaceName: string }): Promise<SessionCredentials> {
     const email = normalizeEmail(input.email);
@@ -98,6 +110,106 @@ export class AuthService {
       workspaceId: row.workspace_id,
       role: row.role
     });
+  }
+
+  async requestSignupOtp(emailInput: string): Promise<void> {
+    const email = normalizeEmail(emailInput);
+    const otp = generateSignupOtp();
+    const challengeId = randomUUID();
+    const result = await this.database.createSignupOtpChallenge({
+      email,
+      challengeId,
+      otpHash: hashSignupOtp(otp, challengeId),
+      expiresInMinutes: SIGNUP_OTP_EXPIRY_MINUTES,
+      resendCooldownSeconds: SIGNUP_OTP_RESEND_COOLDOWN_SECONDS,
+      maxAttempts: SIGNUP_OTP_MAX_ATTEMPTS
+    });
+    if (result.kind === 'created') {
+      await this.emailProvider.sendSignupOtp({ to: email, otp, expiresInMinutes: SIGNUP_OTP_EXPIRY_MINUTES });
+    }
+  }
+
+  async verifySignupOtp(emailInput: string, otp: string): Promise<string | undefined> {
+    const email = normalizeEmail(emailInput);
+    const verificationToken = randomToken();
+    const result = await this.database.verifySignupOtp({
+      email,
+      otp,
+      verificationTokenHash: hashToken(verificationToken),
+      verificationTokenMinutes: SIGNUP_VERIFICATION_TOKEN_MINUTES
+    });
+    return result.kind === 'verified' ? verificationToken : undefined;
+  }
+
+  async completeSignup(input: {
+    verificationToken: string;
+    password: string;
+    workspaceName: string;
+  }): Promise<SessionCredentials | 'duplicate' | undefined> {
+    const passwordHash = await argon2.hash(input.password, { type: argon2.argon2id });
+    const client = await this.database.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const challengeResult = await client.query<{ email: string }>(
+        `SELECT email
+         FROM email_verification_challenges
+         WHERE verification_token_hash = $1
+           AND verification_token_consumed_at IS NULL
+           AND verification_token_expires_at > now()
+         FOR UPDATE`,
+        [hashToken(input.verificationToken)]
+      );
+      const challenge = challengeResult.rows[0];
+      if (!challenge) {
+        await client.query('ROLLBACK');
+        return undefined;
+      }
+
+      const existing = await client.query<{ id: string }>('SELECT id FROM users WHERE email = $1 FOR UPDATE', [challenge.email]);
+      if (existing.rows[0]) {
+        await client.query(
+          'UPDATE email_verification_challenges SET verification_token_consumed_at = now() WHERE verification_token_hash = $1',
+          [hashToken(input.verificationToken)]
+        );
+        await client.query('COMMIT');
+        return 'duplicate';
+      }
+
+      const userResult = await client.query<{ id: string }>(
+        `INSERT INTO users (email, password_hash, email_verified_at)
+         VALUES ($1, $2, now()) RETURNING id`,
+        [challenge.email, passwordHash]
+      );
+      const user = userResult.rows[0];
+      if (!user) throw new Error('User was not created');
+      const workspaceResult = await client.query<{ id: string }>(
+        'INSERT INTO workspaces (name) VALUES ($1) RETURNING id',
+        [input.workspaceName.trim()]
+      );
+      const workspace = workspaceResult.rows[0];
+      if (!workspace) throw new Error('Workspace was not created');
+      await client.query(
+        `INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, 'owner')`,
+        [workspace.id, user.id]
+      );
+      const credentials = await this.createSessionWithClient(client, {
+        userId: user.id,
+        email: challenge.email,
+        workspaceId: workspace.id,
+        role: 'owner'
+      });
+      await client.query(
+        'UPDATE email_verification_challenges SET verification_token_consumed_at = now() WHERE verification_token_hash = $1',
+        [hashToken(input.verificationToken)]
+      );
+      await client.query('COMMIT');
+      return credentials;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async createSession(user: {

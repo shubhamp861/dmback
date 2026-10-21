@@ -8,6 +8,7 @@ import rawBody from 'fastify-raw-body';
 import type { Config } from './config.js';
 import type { LogController as LogControllerType } from 'fastify';
 import { AuthService } from './auth.js';
+import { FakeEmailProvider } from './email.js';
 import { Database } from './db.js';
 import { InstagramOAuthService } from './instagram/oauth.js';
 import { BullMqEventQueue } from './queue.js';
@@ -35,7 +36,7 @@ export function buildApp(config: Config) {
   const queue = new BullMqEventQueue(config, (error) => app.log.error({ err: safeError(error) }, 'Redis producer error'));
   const rateLimiter = new RedisRateLimiter(config);
   database.pool.on('error', (error) => app.log.error({ err: safeError(error) }, 'Database pool error'));
-  const auth = new AuthService(database);
+  const auth = new AuthService(database, new FakeEmailProvider());
   const instagramOAuth = new InstagramOAuthService(database, config);
 
   app.register(cookie);

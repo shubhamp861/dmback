@@ -5,6 +5,7 @@ import { buildApp } from '../../src/app.js';
 import { BullMqEventQueue, MATCH_COMMENT_QUEUE, type MatchCommentJob } from '../../src/queue.js';
 import { dispatchWebhookOutbox, dispatchWebhookReplays, processWebhookEvent, processWebhookReplay } from '../../src/processing.js';
 import { parsePaginationQuery } from '../../src/pagination.js';
+import { hashSignupOtp } from '../../src/email-verification.js';
 import { createIntegrationContext, eventually } from './helpers.js';
 
 describe('real PostgreSQL, Redis, Fastify and worker integration', () => {
@@ -439,6 +440,91 @@ describe('real PostgreSQL, Redis, Fastify and worker integration', () => {
       expect(requests.rows[0].total).toBe(0);
       expect(audit.rows[0].total).toBe(0);
     } finally { await context.database.pool.query('DROP TRIGGER reject_replay_audit ON audit_log; DROP FUNCTION reject_replay_audit();'); }
+  });
+
+  it('enforces OTP expiry, attempt limits, resend cooldown, single-use replay, duplicate email, and verified sessions', async () => {
+    const limitedEmail = `${randomUUID()}@example.test`;
+    const limitedChallengeId = randomUUID();
+    expect(await context.database.createSignupOtpChallenge({
+      email: limitedEmail, challengeId: limitedChallengeId,
+      otpHash: hashSignupOtp('123456', limitedChallengeId), expiresInMinutes: 10,
+      resendCooldownSeconds: 60, maxAttempts: 5
+    })).toMatchObject({ kind: 'created' });
+    expect(await context.database.createSignupOtpChallenge({
+      email: limitedEmail, challengeId: randomUUID(), otpHash: 'unused', expiresInMinutes: 10,
+      resendCooldownSeconds: 60, maxAttempts: 5
+    })).toEqual({ kind: 'cooldown' });
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expect(await context.database.verifySignupOtp({
+        email: limitedEmail, otp: '000000', verificationTokenHash: `wrong-${attempt}`, verificationTokenMinutes: 10
+      })).toEqual({ kind: 'invalid' });
+    }
+    expect(await context.database.verifySignupOtp({
+      email: limitedEmail, otp: '123456', verificationTokenHash: 'unused', verificationTokenMinutes: 10
+    })).toEqual({ kind: 'invalid' });
+    const attempts = await context.database.pool.query(
+      'SELECT attempts FROM email_verification_challenges WHERE id = $1', [limitedChallengeId]);
+    expect(attempts.rows[0].attempts).toBe(5);
+
+    const expiredEmail = `${randomUUID()}@example.test`;
+    const expiredChallengeId = randomUUID();
+    await context.database.createSignupOtpChallenge({
+      email: expiredEmail, challengeId: expiredChallengeId,
+      otpHash: hashSignupOtp('123456', expiredChallengeId), expiresInMinutes: 10,
+      resendCooldownSeconds: 60, maxAttempts: 5
+    });
+    await context.database.pool.query(
+      'UPDATE email_verification_challenges SET expires_at = now() - interval \'1 minute\' WHERE id = $1', [expiredChallengeId]);
+    expect(await context.database.verifySignupOtp({
+      email: expiredEmail, otp: '123456', verificationTokenHash: 'expired', verificationTokenMinutes: 10
+    })).toEqual({ kind: 'invalid' });
+
+    const verifiedEmail = `${randomUUID()}@example.test`;
+    const verifiedChallengeId = randomUUID();
+    await context.database.createSignupOtpChallenge({
+      email: verifiedEmail, challengeId: verifiedChallengeId,
+      otpHash: hashSignupOtp('123456', verifiedChallengeId), expiresInMinutes: 10,
+      resendCooldownSeconds: 60, maxAttempts: 5
+    });
+    const verified = await app.inject({ method: 'POST', url: '/v1/auth/signup/verify-otp', payload: {
+      email: verifiedEmail, otp: '123456'
+    } });
+    expect(verified.statusCode).toBe(200);
+    const verificationToken = verified.json().data.verificationToken as string;
+    const completed = await app.inject({ method: 'POST', url: '/v1/auth/signup/complete', payload: {
+      verificationToken, password: 'integration-verified-password', workspaceName: 'Verified workspace'
+    } });
+    expect(completed.statusCode).toBe(201);
+    const cookies = completed.cookies;
+    expect(cookies.find((cookie) => cookie.name === 'session')?.value).toBeTruthy();
+    expect(cookies.find((cookie) => cookie.name === 'csrf_token')?.value).toBeTruthy();
+    const user = await context.database.pool.query(
+      'SELECT email_verified_at FROM users WHERE email = $1', [verifiedEmail]);
+    expect(user.rows[0].email_verified_at).toBeInstanceOf(Date);
+    const replay = await app.inject({ method: 'POST', url: '/v1/auth/signup/complete', payload: {
+      verificationToken, password: 'integration-verified-password', workspaceName: 'Replay workspace'
+    } });
+    expect(replay.statusCode).toBe(400);
+    expect(replay.json().code).toBe('INVALID_VERIFICATION_TOKEN');
+
+    const existingEmail = (await context.database.pool.query<{ email: string }>('SELECT email FROM users LIMIT 1')).rows[0]?.email;
+    expect(existingEmail).toBeTruthy();
+    const duplicateChallengeId = randomUUID();
+    await context.database.pool.query(
+      `INSERT INTO email_verification_challenges
+       (id, email, otp_hash, expires_at, max_attempts, resend_available_at)
+       VALUES ($1, $2, $3, now() + interval '10 minutes', 5, now())`,
+      [duplicateChallengeId, existingEmail, hashSignupOtp('123456', duplicateChallengeId)]
+    );
+    const duplicateVerified = await app.inject({ method: 'POST', url: '/v1/auth/signup/verify-otp', payload: {
+      email: existingEmail, otp: '123456'
+    } });
+    expect(duplicateVerified.statusCode).toBe(200);
+    const duplicateCompleted = await app.inject({ method: 'POST', url: '/v1/auth/signup/complete', payload: {
+      verificationToken: duplicateVerified.json().data.verificationToken, password: 'integration-verified-password'
+    } });
+    expect(duplicateCompleted.statusCode).toBe(409);
+    expect(duplicateCompleted.json().code).toBe('EMAIL_TAKEN');
   });
 
   it('rechecks ownership at processing and trigger-write time after accepting a replay', async () => {

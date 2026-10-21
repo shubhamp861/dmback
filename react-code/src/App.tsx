@@ -1,16 +1,18 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   INITIAL_CAMPAIGNS,
   MOCK_IG_POSTS,
   MOCK_ANALYTICS_30D,
   INITIAL_PROFILE,
-  AVATAR_URL,
 } from './data/mockData';
 import { DMAutomationCampaign, AnalyticsDay } from './types';
 import {
-  SEEDED_USER,
   SEEDED_IG_ACCOUNT,
   SEEDED_TRIGGER_EVENTS,
+  AuthUser,
+  InstagramAccount,
+  authApi,
+  ApiError,
   TriggerEvent,
   ReplayResponse,
 } from './lib/api';
@@ -21,6 +23,7 @@ import { LiveSimulatorView } from './components/views/LiveSimulatorView';
 import { TriggerEventsView } from './components/views/TriggerEventsView';
 import { CreateCampaignSheet } from './components/views/CreateCampaignSheet';
 import { InstagramLoginModal } from './components/views/InstagramLoginModal';
+import { AuthModal } from './components/views/AuthModal';
 import { Button } from './components/ui/Button';
 import {
   LayoutDashboard,
@@ -34,9 +37,9 @@ import {
   Instagram,
   LogOut,
   Sparkles,
-  Layers,
   Menu,
   X,
+  User,
 } from 'lucide-react';
 
 export interface ConnectedInstagramUser {
@@ -47,8 +50,9 @@ export interface ConnectedInstagramUser {
 }
 
 export default function App() {
-  // Authentication status: defaults to false so home screen shows website features without prompt
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  // Email authentication owns the app session. Instagram connection is tracked separately.
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [accounts, setAccounts] = useState<InstagramAccount[]>([]);
   const [connectedUser, setConnectedUser] = useState<ConnectedInstagramUser | null>(null);
 
   // Active navigation tab: 'features' | 'dashboard' | 'automations' | 'simulator' | 'events'
@@ -56,7 +60,8 @@ export default function App() {
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
 
   // Modals state
-  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isInstagramModalOpen, setIsInstagramModalOpen] = useState(false);
   const [featureAttempted, setFeatureAttempted] = useState<string>('');
   const [isCreateOpen, setIsCreateOpen] = useState(false);
 
@@ -66,6 +71,43 @@ export default function App() {
   const [analytics] = useState<AnalyticsDay[]>(MOCK_ANALYTICS_30D);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  const isLoggedIn = currentUser !== null;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const restoreSession = async () => {
+      try {
+        const response = await authApi.me();
+        if (!cancelled) {
+          setCurrentUser(response.data);
+        }
+      } catch (error) {
+        const apiError = error as ApiError;
+        if (!cancelled && apiError.code !== 'UNAUTHENTICATED') {
+          showToast('Unable to restore your email session');
+        }
+        if (!cancelled) setCurrentUser(null);
+      }
+    };
+
+    void restoreSession();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) {
+      setAccounts([]);
+      return;
+    }
+
+    void authApi.accounts()
+      .then((response) => setAccounts(response.data))
+      .catch(() => setAccounts([]));
+  }, [currentUser]);
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => {
@@ -73,11 +115,11 @@ export default function App() {
     }, 2800);
   };
 
-  // Guard for protected features: pops up Instagram login modal if not authenticated
+  // Guard for protected features: the email session authenticates app access.
   const requireLogin = (featureName: string, targetTab?: 'dashboard' | 'automations' | 'simulator' | 'events') => {
     if (!isLoggedIn) {
       setFeatureAttempted(featureName);
-      setIsLoginModalOpen(true);
+      setIsAuthModalOpen(true);
       return false;
     }
     if (targetTab) {
@@ -104,28 +146,47 @@ export default function App() {
     }
   };
 
-  const handleLoginSuccess = (account: ConnectedInstagramUser) => {
-    setIsLoggedIn(true);
+  const handleInstagramConnection = (account: ConnectedInstagramUser) => {
     setConnectedUser(account);
     showToast(`Connected as @${account.username}`);
-
-    // If they were trying to explore a specific feature, take them there, otherwise to Dashboard
-    if (featureAttempted.includes('Simulator')) {
-      setActiveTab('simulator');
-    } else if (featureAttempted.includes('Automations') || featureAttempted.includes('Campaign')) {
-      setActiveTab('automations');
-    } else if (featureAttempted.includes('Outbox') || featureAttempted.includes('Events')) {
-      setActiveTab('events');
-    } else {
-      setActiveTab('dashboard');
-    }
   };
 
-  const handleLogout = () => {
-    setIsLoggedIn(false);
+  const handleLogout = async () => {
+    try {
+      await authApi.logout();
+    } catch {
+      // Clear local state even when the server session is already unavailable.
+    }
+    setCurrentUser(null);
+    setAccounts([]);
     setConnectedUser(null);
     setActiveTab('features');
-    showToast('Logged out from Instagram account');
+    showToast('Logged out of LinktoDM');
+  };
+
+  const handleEmailLogin = async (email: string, password: string) => {
+    const response = await authApi.login({ email, password });
+    setCurrentUser(response.data);
+    setActiveTab(featureAttempted ? 'dashboard' : activeTab);
+  };
+
+  const handleSignupRequestOtp = async (email: string) => {
+    await authApi.signupRequestOtp(email);
+  };
+
+  const handleSignupVerifyOtp = async (email: string, otp: string) => {
+    const response = await authApi.signupVerifyOtp(email, otp);
+    return response.data.verificationToken;
+  };
+
+  const handleSignupComplete = async (verificationToken: string, password: string, workspaceName: string) => {
+    const response = await authApi.signupComplete(verificationToken, password, workspaceName);
+    setCurrentUser(response.data);
+    setActiveTab('dashboard');
+  };
+
+  const handleRequestReset = async (email: string) => {
+    await authApi.requestReset(email);
   };
 
   const handleAddCampaign = (
@@ -286,38 +347,44 @@ export default function App() {
           {/* Zone 3: Primary Action / Login / Logout State + Mobile Toggle */}
           <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
             {!isLoggedIn ? (
-              /* Logged Out State: Connect Instagram button */
+              /* Logged Out State: email session sign-in */
               <Button
                 variant="brand"
                 size="sm"
                 onClick={() => {
-                  setFeatureAttempted('Instagram Account Connection');
-                  setIsLoginModalOpen(true);
+                  setIsAuthModalOpen(true);
                 }}
                 className="gap-1.5 sm:gap-2 text-xs sm:text-sm shadow-sm shadow-sky-500/20 whitespace-nowrap px-2.5 sm:px-3.5"
               >
-                <Instagram className="w-4 h-4 shrink-0" />
-                <span className="hidden sm:inline">Connect Instagram</span>
-                <span className="sm:hidden">Connect</span>
+                <User className="w-4 h-4 shrink-0" />
+                <span className="hidden sm:inline">Sign in</span>
+                <span className="sm:hidden">Sign in</span>
               </Button>
             ) : (
-              /* Logged In State: Connected Account Pill & Log Out Button */
+              /* Logged In State: email account + separate Instagram connection */
               <div className="flex items-center gap-1.5 sm:gap-2">
                 <div
-                  title="Connected Instagram Account"
+                  title="Signed-in email account"
                   className="flex items-center gap-1.5 sm:gap-2 px-2 py-1 sm:px-2.5 sm:py-1.5 rounded-xl border border-sky-200/80 bg-white/95 shadow-2xs"
                 >
-                  <div className="w-6 h-6 rounded-full overflow-hidden ring-1 ring-sky-300 shrink-0">
-                    <img
-                      src={connectedUser?.avatarUrl || AVATAR_URL}
-                      alt={connectedUser?.username || 'user'}
-                      className="w-full h-full object-cover"
-                    />
+                  <div className="w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[10px] font-bold shrink-0">
+                    {currentUser?.email.slice(0, 2).toUpperCase()}
                   </div>
-                  <span className="text-xs font-semibold text-slate-900 max-w-[85px] sm:max-w-none truncate hidden xs:inline">
-                    @{connectedUser?.username || 'elena.creates'}
+                  <span className="text-xs font-semibold text-slate-900 max-w-[120px] sm:max-w-none truncate hidden xs:inline">
+                    {currentUser?.email}
                   </span>
                 </div>
+
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setIsInstagramModalOpen(true)}
+                  className="gap-1 px-2 text-xs text-slate-600 hover:text-sky-700 hover:bg-sky-50"
+                  title="Connect Instagram account"
+                >
+                  <Instagram className="w-3.5 h-3.5 shrink-0" />
+                  <span className="hidden sm:inline">Instagram</span>
+                </Button>
 
                 <Button
                   variant="outline"
@@ -433,7 +500,7 @@ export default function App() {
           <PublicLandingView
             onRequireLogin={(feat) => {
               setFeatureAttempted(feat);
-              setIsLoginModalOpen(true);
+              setIsAuthModalOpen(true);
             }}
             onExploreFeature={(tab) => handleTabClick(tab)}
           />
@@ -530,13 +597,27 @@ export default function App() {
         </div>
       </div>
 
-      {/* Instagram Login / Connect OAuth Modal (Pops up when exploring features) */}
-      <InstagramLoginModal
-        isOpen={isLoginModalOpen}
-        onClose={() => setIsLoginModalOpen(false)}
-        onLoginSuccess={handleLoginSuccess}
-        featureAttempted={featureAttempted}
-      />
+       {/* Email authentication modal */}
+       <AuthModal
+         isOpen={isAuthModalOpen}
+         onClose={() => setIsAuthModalOpen(false)}
+         currentUser={currentUser}
+         accounts={accounts}
+         onLogin={handleEmailLogin}
+         onSignupRequestOtp={handleSignupRequestOtp}
+         onSignupVerifyOtp={handleSignupVerifyOtp}
+         onSignupComplete={handleSignupComplete}
+         onLogout={handleLogout}
+         onRequestReset={handleRequestReset}
+       />
+
+       {/* Separate Instagram connection surface; it never creates the app email session. */}
+       <InstagramLoginModal
+         isOpen={isInstagramModalOpen}
+         onClose={() => setIsInstagramModalOpen(false)}
+         onLoginSuccess={handleInstagramConnection}
+         featureAttempted={featureAttempted}
+       />
 
       {/* Create Campaign Modal */}
       <CreateCampaignSheet

@@ -29,6 +29,16 @@ const signupSchema = z.object({
   password: z.string().min(12).max(256),
   workspaceName: z.string().trim().min(1).max(120).default('My workspace')
 });
+const signupOtpRequestSchema = z.object({ email: z.string().trim().email().max(320) });
+const signupOtpVerifySchema = z.object({
+  email: z.string().trim().email().max(320),
+  otp: z.string().regex(/^\d{6}$/)
+});
+const signupCompleteSchema = z.object({
+  verificationToken: z.string().min(20).max(256),
+  password: z.string().min(12).max(256),
+  workspaceName: z.string().trim().min(1).max(120).default('My workspace')
+});
 const loginSchema = z.object({
   email: z.string().trim().email().max(320),
   password: z.string().min(1).max(256)
@@ -157,6 +167,49 @@ export async function registerRoutes(app: FastifyInstance, dependencies: RouteDe
       }
       throw error;
     }
+  });
+
+  app.post('/v1/auth/signup/request-otp', async (request, reply) => {
+    if (!await enforceRateLimit(request, reply, rateLimiter, config, `auth-ip:${request.ip}`, config.RATE_LIMIT_AUTH_IP_MAX ?? 20)) return;
+    const parsed = signupOtpRequestSchema.safeParse(request.body);
+    if (!parsed.success) return validationError(reply, parsed.error);
+    await auth.requestSignupOtp(parsed.data.email);
+    // This response intentionally does not reveal whether the email is already registered.
+    return reply.code(202).send({ data: { accepted: true } });
+  });
+
+  app.post('/v1/auth/signup/verify-otp', async (request, reply) => {
+    if (!await enforceRateLimit(request, reply, rateLimiter, config, `auth-ip:${request.ip}`, config.RATE_LIMIT_AUTH_IP_MAX ?? 20)) return;
+    const parsed = signupOtpVerifySchema.safeParse(request.body);
+    if (!parsed.success) return validationError(reply, parsed.error);
+    const verificationToken = await auth.verifySignupOtp(parsed.data.email, parsed.data.otp);
+    if (!verificationToken) {
+      return reply.code(400).send({ code: 'INVALID_SIGNUP_OTP', message: 'The verification code is invalid or expired' });
+    }
+    return reply.send({ data: { verificationToken } });
+  });
+
+  app.post('/v1/auth/signup/complete', async (request, reply) => {
+    if (!await enforceRateLimit(request, reply, rateLimiter, config, `auth-ip:${request.ip}`, config.RATE_LIMIT_AUTH_IP_MAX ?? 20)) return;
+    const parsed = signupCompleteSchema.safeParse(request.body);
+    if (!parsed.success) return validationError(reply, parsed.error);
+    let result: Awaited<ReturnType<AuthService['completeSignup']>>;
+    try {
+      result = await auth.completeSignup(parsed.data);
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        return reply.code(409).send({ code: 'EMAIL_TAKEN', message: 'An account already exists for this email' });
+      }
+      throw error;
+    }
+    if (!result) {
+      return reply.code(400).send({ code: 'INVALID_VERIFICATION_TOKEN', message: 'The verification token is invalid or expired' });
+    }
+    if (result === 'duplicate') {
+      return reply.code(409).send({ code: 'EMAIL_TAKEN', message: 'An account already exists for this email' });
+    }
+    setAuthCookies(reply, config, result.sessionToken, result.csrfToken);
+    return reply.code(201).send({ data: result.user });
   });
 
   app.post('/v1/auth/login', async (request, reply) => {

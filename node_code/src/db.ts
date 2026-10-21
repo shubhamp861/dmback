@@ -12,6 +12,7 @@ import {
   type BeginIdempotencyResult,
   type IdempotencyBody
 } from './idempotency.js';
+import { hashSignupOtp } from './email-verification.js';
 
 const { Pool } = pg;
 
@@ -56,6 +57,15 @@ export interface AutomationRecord extends AutomationForMatching {
   flowId: string | null;
 }
 
+export type SignupOtpChallengeResult =
+  | { kind: 'user_exists' }
+  | { kind: 'cooldown' }
+  | { kind: 'created'; challengeId: string };
+
+export type SignupOtpVerificationResult =
+  | { kind: 'invalid' }
+  | { kind: 'verified' };
+
 export class Database {
   readonly pool: pg.Pool;
   private readonly idempotency: IdempotencyStore;
@@ -77,6 +87,104 @@ export class Database {
 
   async healthcheck(): Promise<void> {
     await this.pool.query('SELECT 1');
+  }
+
+  async createSignupOtpChallenge(input: {
+    email: string;
+    challengeId: string;
+    otpHash: string;
+    expiresInMinutes: number;
+    resendCooldownSeconds: number;
+    maxAttempts: number;
+  }): Promise<SignupOtpChallengeResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [input.email]);
+      const user = await client.query('SELECT id FROM users WHERE email = $1 FOR SHARE', [input.email]);
+      if (user.rows[0]) {
+        await client.query('ROLLBACK');
+        return { kind: 'user_exists' };
+      }
+      const latest = await client.query<{ resend_available_at: Date }>(
+        `SELECT resend_available_at
+         FROM email_verification_challenges
+         WHERE email = $1 AND consumed_at IS NULL
+         ORDER BY created_at DESC
+         LIMIT 1
+         FOR UPDATE`,
+        [input.email]
+      );
+      if (latest.rows[0] && latest.rows[0].resend_available_at > new Date()) {
+        await client.query('ROLLBACK');
+        return { kind: 'cooldown' };
+      }
+      await client.query(
+        `INSERT INTO email_verification_challenges
+           (id, email, otp_hash, expires_at, max_attempts, resend_available_at)
+         VALUES ($1, $2, $3, now() + ($4::text || ' minutes')::interval,
+                 $5, now() + ($6::text || ' seconds')::interval)`,
+        [input.challengeId, input.email, input.otpHash, input.expiresInMinutes, input.maxAttempts, input.resendCooldownSeconds]
+      );
+      await client.query('COMMIT');
+      return { kind: 'created', challengeId: input.challengeId };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async verifySignupOtp(input: {
+    email: string;
+    otp: string;
+    verificationTokenHash: string;
+    verificationTokenMinutes: number;
+  }): Promise<SignupOtpVerificationResult> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query<{
+        id: string;
+        otp_hash: string;
+        attempts: number;
+        max_attempts: number;
+        expires_at: Date;
+      }>(
+        `SELECT id, otp_hash, attempts, max_attempts, expires_at
+         FROM email_verification_challenges
+         WHERE email = $1 AND consumed_at IS NULL
+         ORDER BY created_at DESC
+         LIMIT 1
+         FOR UPDATE`,
+        [input.email]
+      );
+      const challenge = result.rows[0];
+      if (!challenge || challenge.expires_at <= new Date() || challenge.attempts >= challenge.max_attempts) {
+        await client.query('ROLLBACK');
+        return { kind: 'invalid' };
+      }
+      await client.query('UPDATE email_verification_challenges SET attempts = attempts + 1 WHERE id = $1', [challenge.id]);
+      if (hashSignupOtp(input.otp, challenge.id) !== challenge.otp_hash) {
+        await client.query('COMMIT');
+        return { kind: 'invalid' };
+      }
+      await client.query(
+        `UPDATE email_verification_challenges
+         SET consumed_at = now(), verification_token_hash = $2,
+             verification_token_expires_at = now() + ($3::text || ' minutes')::interval
+         WHERE id = $1`,
+        [challenge.id, input.verificationTokenHash, input.verificationTokenMinutes]
+      );
+      await client.query('COMMIT');
+      return { kind: 'verified' };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async beginIdempotency(input: BeginIdempotencyInput): Promise<BeginIdempotencyResult> {

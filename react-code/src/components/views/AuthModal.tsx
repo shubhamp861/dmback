@@ -1,21 +1,25 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Sheet } from '../ui/Sheet';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
-import { AuthUser, InstagramAccount } from '../../lib/api';
+import { API_BASE_URL, AuthUser, formatApiError, InstagramAccount } from '../../lib/api';
 import {
-  User,
-  Shield,
-  Instagram,
-  Lock,
-  Mail,
+  AlertCircle,
+  ArrowLeft,
   Building,
   CheckCircle2,
+  Instagram,
   LogOut,
-  ExternalLink,
-  KeyRound,
-  AlertCircle,
+  Mail,
+  Shield,
+  User,
 } from 'lucide-react';
+
+const OTP_RESEND_COOLDOWN_SECONDS = 60;
+const OTP_MAX_ATTEMPTS = 5;
+
+type AuthMode = 'profile' | 'login' | 'signup' | 'reset';
+type SignupStep = 'email' | 'otp' | 'complete';
 
 export interface AuthModalProps {
   isOpen: boolean;
@@ -23,7 +27,9 @@ export interface AuthModalProps {
   currentUser: AuthUser | null;
   accounts: InstagramAccount[];
   onLogin: (email: string, password: string) => Promise<void>;
-  onSignup: (email: string, password: string, workspaceName: string) => Promise<void>;
+  onSignupRequestOtp: (email: string) => Promise<void>;
+  onSignupVerifyOtp: (email: string, otp: string) => Promise<string>;
+  onSignupComplete: (verificationToken: string, password: string, workspaceName: string) => Promise<void>;
   onLogout: () => Promise<void>;
   onRequestReset: (email: string) => Promise<void>;
 }
@@ -34,74 +40,204 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   currentUser,
   accounts,
   onLogin,
-  onSignup,
+  onSignupRequestOtp,
+  onSignupVerifyOtp,
+  onSignupComplete,
   onLogout,
   onRequestReset,
 }) => {
-  const [mode, setMode] = useState<'profile' | 'login' | 'signup' | 'reset'>('profile');
-  const [email, setEmail] = useState('developer@example.local');
-  const [password, setPassword] = useState('local-development-password');
+  const [mode, setMode] = useState<AuthMode>('login');
+  const [signupStep, setSignupStep] = useState<SignupStep>('email');
+  const [email, setEmail] = useState('');
+  const [otp, setOtp] = useState('');
+  const [verificationToken, setVerificationToken] = useState<string | null>(null);
+  const [password, setPassword] = useState('');
   const [workspaceName, setWorkspaceName] = useState('My Creator Studio');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
+  const [otpNotice, setOtpNotice] = useState<string | null>(null);
+  const [otpCooldown, setOtpCooldown] = useState(0);
+  const [otpAttempts, setOtpAttempts] = useState(0);
+  const [otpAttemptLimitReached, setOtpAttemptLimitReached] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    setMode(currentUser ? 'profile' : 'login');
+    setSignupStep('email');
+    setOtp('');
+    setVerificationToken(null);
+    setPassword('');
+    setError(null);
+    setResetMessage(null);
+    setOtpNotice(null);
+    setOtpCooldown(0);
+    setOtpAttempts(0);
+    setOtpAttemptLimitReached(false);
+  }, [isOpen, currentUser]);
+
+  useEffect(() => {
+    if (otpCooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setOtpCooldown((remaining) => Math.max(remaining - 1, 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [otpCooldown]);
+
+  const switchMode = (nextMode: AuthMode) => {
+    setMode(nextMode);
+    setError(null);
+    setResetMessage(null);
+    setOtpNotice(null);
+    if (nextMode === 'signup') {
+      setSignupStep('email');
+      setOtp('');
+      setVerificationToken(null);
+      setOtpAttempts(0);
+      setOtpAttemptLimitReached(false);
+      setOtpCooldown(0);
+    }
+  };
+
+  const handleRequestOtp = async () => {
+    const normalizedEmail = email.trim().toLowerCase();
+    setEmail(normalizedEmail);
+    setError(null);
+    setOtpNotice(null);
+    setLoading(true);
+
+    try {
+      await onSignupRequestOtp(normalizedEmail);
+      setSignupStep('otp');
+      setOtp('');
+      setOtpCooldown(OTP_RESEND_COOLDOWN_SECONDS);
+      setOtpAttempts(0);
+      setOtpAttemptLimitReached(false);
+      setOtpNotice('If this email is eligible, a six-digit verification code was sent.');
+    } catch (err: unknown) {
+      setError(formatApiError(err, 'We could not request a verification code.'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyOtp = async () => {
+    if (otpAttemptLimitReached) return;
+
+    setError(null);
+    setOtpNotice(null);
+    setLoading(true);
+
+    try {
+      const responseToken = await onSignupVerifyOtp(email.trim().toLowerCase(), otp.trim());
+      setVerificationToken(responseToken);
+      setSignupStep('complete');
+      setOtpAttempts(0);
+    } catch (err: unknown) {
+      const apiError = err as { code?: string };
+      const nextAttempts = otpAttempts + (apiError?.code === 'INVALID_SIGNUP_OTP' ? 1 : 0);
+      setOtpAttempts(nextAttempts);
+      if (apiError?.code === 'INVALID_SIGNUP_OTP' && nextAttempts >= OTP_MAX_ATTEMPTS) {
+        setOtpAttemptLimitReached(true);
+        setError('Too many incorrect attempts. Request a new verification code to continue.');
+      } else {
+        setError(formatApiError(err, 'The verification code could not be verified.'));
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    if (otpCooldown > 0 || loading) return;
+    await handleRequestOtp();
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (mode === 'signup') {
+      if (signupStep === 'email') {
+        await handleRequestOtp();
+        return;
+      }
+      if (signupStep === 'otp') {
+        await handleVerifyOtp();
+        return;
+      }
+    }
+
     setError(null);
     setLoading(true);
 
     try {
       if (mode === 'login') {
-        await onLogin(email, password);
+        await onLogin(email.trim(), password);
         onClose();
-      } else if (mode === 'signup') {
-        await onSignup(email, password, workspaceName);
+      } else if (mode === 'signup' && signupStep === 'complete') {
+        if (!verificationToken) {
+          setError('Your verification expired. Request a new code to continue.');
+          setSignupStep('email');
+          return;
+        }
+        await onSignupComplete(verificationToken, password, workspaceName);
         onClose();
       } else if (mode === 'reset') {
-        await onRequestReset(email);
+        await onRequestReset(email.trim());
         setResetMessage('If an account exists for this email, reset instructions have been recorded.');
       }
     } catch (err: unknown) {
-      const apiErr = err as { message?: string; fields?: Record<string, string[]> };
-      setError(apiErr?.message || 'Authentication operation failed');
+      const apiError = err as { code?: string };
+      setError(formatApiError(err));
+      if (mode === 'signup' && apiError?.code === 'INVALID_VERIFICATION_TOKEN') {
+        setVerificationToken(null);
+        setSignupStep('email');
+      }
     } finally {
       setLoading(false);
     }
   };
 
   const handleConnectInstagram = () => {
-    // In live mode navigates to /v1/auth/instagram/start
-    const url = 'http://127.0.0.1:3000/v1/auth/instagram/start';
-    if (window.confirm('Initiate Instagram OAuth connection via GET /v1/auth/instagram/start?')) {
+    const url = `${API_BASE_URL}/v1/auth/instagram/start`;
+    if (window.confirm('Continue to Instagram to connect a professional account?')) {
       window.location.assign(url);
     }
   };
+
+  const title = currentUser
+    ? 'Workspace & Authentication Profile'
+    : mode === 'login'
+    ? 'Log In to LinktoDM'
+    : mode === 'signup'
+    ? signupStep === 'email'
+      ? 'Create Your Workspace'
+      : signupStep === 'otp'
+      ? 'Verify Your Email'
+      : 'Finish Your Workspace'
+    : 'Reset Password';
+
+  const description = currentUser
+    ? 'Your email session is active. Instagram is connected separately to this workspace.'
+    : mode === 'signup'
+    ? signupStep === 'email'
+      ? 'Start with your email address. We will send a one-time verification code.'
+      : signupStep === 'otp'
+      ? `Enter the six-digit code sent to ${email}.`
+      : 'Choose a password and name your new workspace.'
+    : 'Email authentication via secure cookie sessions (/v1/auth).';
 
   return (
     <Sheet
       isOpen={isOpen}
       onClose={onClose}
-      title={
-        currentUser
-          ? 'Workspace & Authentication Profile'
-          : mode === 'login'
-          ? 'Log In to LinktoDM'
-          : mode === 'signup'
-          ? 'Create New Workspace'
-          : 'Reset Password'
-      }
-      description={
-        currentUser
-          ? 'Session authenticated with secure HttpOnly cookie and CSRF agreement.'
-          : 'Backend authentication via cookie sessions (/v1/auth).'
-      }
+      title={title}
+      description={description}
       maxWidth="max-w-lg"
     >
-      {/* State A: Authenticated User Profile */}
       {currentUser && mode === 'profile' ? (
         <div className="space-y-6">
-          {/* User & Role Badge */}
           <div className="p-4 rounded-xl bg-slate-50 border border-slate-200/80 flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-full bg-indigo-600 text-white font-bold flex items-center justify-center text-sm shadow-xs">
@@ -121,7 +257,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           </div>
 
-          {/* Workspace Details */}
           <div className="space-y-2">
             <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider">
               Workspace Context
@@ -140,7 +275,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           </div>
 
-          {/* Connected Instagram Accounts (/v1/ig-accounts) */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <label className="block text-xs font-semibold text-slate-600 uppercase tracking-wider">
@@ -157,34 +291,38 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
 
             <div className="space-y-2">
-              {accounts.map((acc) => (
-                <div
-                  key={acc.id}
-                  className="p-3 rounded-xl border border-slate-200 bg-white flex items-center justify-between gap-3"
-                >
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-amber-500 via-rose-500 to-purple-600 text-white flex items-center justify-center shrink-0">
-                      <Instagram className="w-4 h-4" />
+              {accounts.length > 0 ? (
+                accounts.map((account) => (
+                  <div
+                    key={account.id}
+                    className="p-3 rounded-xl border border-slate-200 bg-white flex items-center justify-between gap-3"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-amber-500 via-rose-500 to-purple-600 text-white flex items-center justify-center shrink-0">
+                        <Instagram className="w-4 h-4" />
+                      </div>
+                      <div className="truncate">
+                        <p className="text-xs font-bold text-slate-900 truncate">@{account.username}</p>
+                        <p className="text-[10px] text-slate-400 font-medium">
+                          {account.accountType || 'Instagram'} · {account.status}
+                        </p>
+                      </div>
                     </div>
-                    <div className="truncate">
-                      <p className="text-xs font-bold text-slate-900 truncate">
-                        @{acc.username}
-                      </p>
-                      <p className="text-[10px] text-slate-400 font-medium">
-                        {acc.accountType} · {acc.status}
-                      </p>
-                    </div>
-                  </div>
 
-                  <span className="text-[11px] font-mono text-slate-500 px-2 py-0.5 rounded bg-slate-100">
-                    {acc.igUserId}
-                  </span>
+                    <span className="text-[11px] font-mono text-slate-500 px-2 py-0.5 rounded bg-slate-100">
+                      {account.igUserId}
+                    </span>
+                  </div>
+                ))
+              ) : (
+                <div className="p-4 rounded-xl border border-dashed border-slate-200 bg-slate-50 text-xs text-slate-500 flex items-center gap-2">
+                  <Instagram className="w-4 h-4 text-slate-400" />
+                  No Instagram account is connected yet.
                 </div>
-              ))}
+              )}
             </div>
           </div>
 
-          {/* Action Row */}
           <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
             <Button
               variant="outline"
@@ -205,11 +343,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </div>
         </div>
       ) : (
-        /* State B: Login / Signup / Password Reset Form */
         <form onSubmit={handleSubmit} className="space-y-4">
           {error && (
-            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0" />
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
               <span>{error}</span>
             </div>
           )}
@@ -221,79 +358,137 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           )}
 
-          {mode === 'signup' && (
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">
-                Workspace Name
-              </label>
-              <Input
-                value={workspaceName}
-                onChange={(e) => setWorkspaceName(e.target.value)}
-                placeholder="My Brand Studio"
-                required
-              />
+          {otpNotice && mode === 'signup' && signupStep === 'otp' && (
+            <div className="p-3 rounded-xl bg-sky-50 border border-sky-200 text-xs text-sky-800 flex items-start gap-2">
+              <Mail className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>{otpNotice}</span>
             </div>
           )}
 
-          <div>
-            <label className="block text-xs font-medium text-slate-700 mb-1">
-              Email Address
-            </label>
-            <Input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="developer@example.local"
-              required
-            />
-          </div>
+          {mode !== 'signup' || signupStep === 'email' || signupStep === 'otp' ? (
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">Email Address</label>
+              <Input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+                autoComplete="email"
+                disabled={mode === 'signup' && signupStep === 'otp'}
+                required
+              />
+            </div>
+          ) : null}
 
-          {mode !== 'reset' && (
+          {mode === 'signup' && signupStep === 'otp' && (
+            <div>
+              <label className="block text-xs font-medium text-slate-700 mb-1">Verification Code</label>
+              <Input
+                value={otp}
+                onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                placeholder="123456"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                maxLength={6}
+                required
+              />
+              <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
+                <span>{otpAttempts > 0 ? `${otpAttempts}/${OTP_MAX_ATTEMPTS} attempts used` : 'Code expires in 10 minutes'}</span>
+                <button
+                  type="button"
+                  onClick={handleResendOtp}
+                  disabled={otpCooldown > 0 || loading}
+                  className="text-indigo-600 hover:text-indigo-700 disabled:text-slate-400 disabled:cursor-not-allowed font-medium cursor-pointer"
+                >
+                  {otpCooldown > 0 ? `Resend in ${otpCooldown}s` : 'Resend code'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {mode === 'signup' && signupStep === 'complete' && (
+            <>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Password (min 12 characters)</label>
+                <Input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••••••"
+                  autoComplete="new-password"
+                  minLength={12}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-700 mb-1">Workspace Name</label>
+                <Input
+                  value={workspaceName}
+                  onChange={(e) => setWorkspaceName(e.target.value)}
+                  placeholder="My Brand Studio"
+                  maxLength={120}
+                  required
+                />
+              </div>
+            </>
+          )}
+
+          {mode !== 'reset' && mode !== 'signup' && (
             <div>
               <div className="flex items-center justify-between mb-1">
-                <label className="block text-xs font-medium text-slate-700">
-                  Password (min 12 characters)
-                </label>
-                {mode === 'login' && (
-                  <button
-                    type="button"
-                    onClick={() => setMode('reset')}
-                    className="text-xs text-indigo-600 hover:underline cursor-pointer"
-                  >
-                    Forgot?
-                  </button>
-                )}
+                <label className="block text-xs font-medium text-slate-700">Password</label>
+                <button
+                  type="button"
+                  onClick={() => switchMode('reset')}
+                  className="text-xs text-indigo-600 hover:underline cursor-pointer"
+                >
+                  Forgot?
+                </button>
               </div>
               <Input
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••••••"
+                autoComplete="current-password"
                 required
               />
             </div>
           )}
 
-          <Button type="submit" variant="brand" className="w-full mt-2" disabled={loading}>
+          <Button type="submit" variant="brand" className="w-full mt-2" disabled={loading || otpAttemptLimitReached}>
             {loading
               ? 'Processing...'
               : mode === 'login'
               ? 'Sign In to Workspace'
+              : mode === 'signup' && signupStep === 'email'
+              ? 'Send Verification Code'
+              : mode === 'signup' && signupStep === 'otp'
+              ? 'Verify Email'
               : mode === 'signup'
               ? 'Create Account & Workspace'
               : 'Send Reset Instructions'}
           </Button>
 
-          {/* Mode Switchers */}
+          {mode === 'signup' && signupStep !== 'email' && (
+            <button
+              type="button"
+              onClick={() => {
+                setSignupStep(signupStep === 'complete' ? 'otp' : 'email');
+                setError(null);
+              }}
+              className="w-full text-center text-xs text-slate-500 hover:text-indigo-700 font-medium py-1 transition-colors cursor-pointer flex items-center justify-center gap-1"
+            >
+              <ArrowLeft className="w-3 h-3" />
+              {signupStep === 'complete' ? 'Back to verification code' : 'Use a different email'}
+            </button>
+          )}
+
           <div className="pt-2 text-center text-xs text-slate-500">
             {mode === 'login' && (
               <p>
                 Don't have a workspace?{' '}
-                <button
-                  type="button"
-                  onClick={() => setMode('signup')}
-                  className="text-indigo-600 font-semibold hover:underline cursor-pointer"
-                >
+                <button type="button" onClick={() => switchMode('signup')} className="text-indigo-600 font-semibold hover:underline cursor-pointer">
                   Create workspace
                 </button>
               </p>
@@ -301,23 +496,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             {mode === 'signup' && (
               <p>
                 Already have an account?{' '}
-                <button
-                  type="button"
-                  onClick={() => setMode('login')}
-                  className="text-indigo-600 font-semibold hover:underline cursor-pointer"
-                >
+                <button type="button" onClick={() => switchMode('login')} className="text-indigo-600 font-semibold hover:underline cursor-pointer">
                   Sign in
                 </button>
               </p>
             )}
             {mode === 'reset' && (
               <p>
-                Remembered password?{' '}
-                <button
-                  type="button"
-                  onClick={() => setMode('login')}
-                  className="text-indigo-600 font-semibold hover:underline cursor-pointer"
-                >
+                Remembered your password?{' '}
+                <button type="button" onClick={() => switchMode('login')} className="text-indigo-600 font-semibold hover:underline cursor-pointer">
                   Back to Sign In
                 </button>
               </p>

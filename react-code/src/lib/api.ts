@@ -3,15 +3,19 @@
  * Conforms strictly to backend contract in API-AUTH-MAPPING_e830a4dd.md
  */
 
-export const API_BASE_URL = typeof window !== 'undefined' && window.location.hostname === 'localhost'
-  ? 'http://127.0.0.1:3000'
-  : '';
+const configuredApiBaseUrl = import.meta.env.VITE_API_BASE_URL?.trim();
+const isLocalBrowser = typeof window !== 'undefined'
+  && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+
+export const API_BASE_URL = configuredApiBaseUrl
+  || (isLocalBrowser ? `http://${window.location.hostname}:3000` : '');
 
 export type ApiError = {
   code: string;
   message: string;
   fields?: Record<string, string[]>;
   requestId?: string;
+  status?: number;
 };
 
 export type ApiResponse<T> = { data: T };
@@ -24,6 +28,23 @@ export type AuthUser = {
   workspaceId: string;
   role: UserRole;
 };
+
+export type SignupInput = {
+  email: string;
+  password: string;
+  workspaceName?: string;
+};
+
+export type LoginInput = {
+  email: string;
+  password: string;
+};
+
+export type SignupOtpRequestResponse = { accepted: boolean };
+export type SignupOtpVerificationResponse = { verificationToken: string };
+export type LogoutResponse = { loggedOut: boolean };
+export type ResetRequestResponse = { accepted: boolean };
+export type ResetConfirmResponse = { reset: boolean };
 
 export type InstagramAccount = {
   id: string;
@@ -187,9 +208,99 @@ export async function apiRequest<T>(
 
   const body = await response.json().catch(() => null);
   if (!response.ok) {
-    throw (body || { code: 'INTERNAL_ERROR', message: `Request failed with status ${response.status}` }) as ApiError;
+    throw (body || {
+      code: 'INTERNAL_ERROR',
+      message: `Request failed with status ${response.status}`,
+      status: response.status,
+    }) as ApiError;
   }
   return body as T;
+}
+
+/**
+ * Typed authentication API. Session and CSRF cookies are managed by the
+ * browser through apiRequest's credentials: 'include' setting.
+ */
+export const authApi = {
+  signupRequestOtp: (email: string) =>
+    apiRequest<ApiResponse<SignupOtpRequestResponse>>('/v1/auth/signup/request-otp', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  signupVerifyOtp: (email: string, otp: string) =>
+    apiRequest<ApiResponse<SignupOtpVerificationResponse>>('/v1/auth/signup/verify-otp', {
+      method: 'POST',
+      body: JSON.stringify({ email, otp }),
+    }),
+
+  signupComplete: (verificationToken: string, password: string, workspaceName?: string) =>
+    apiRequest<ApiResponse<AuthUser>>('/v1/auth/signup/complete', {
+      method: 'POST',
+      body: JSON.stringify({
+        verificationToken,
+        password,
+        ...(workspaceName?.trim() ? { workspaceName: workspaceName.trim() } : {}),
+      }),
+    }),
+
+  /** Legacy direct signup endpoint retained for existing clients. */
+  signup: (input: SignupInput) =>
+    apiRequest<ApiResponse<AuthUser>>('/v1/auth/signup', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  login: (input: LoginInput) =>
+    apiRequest<ApiResponse<AuthUser>>('/v1/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  me: () => apiRequest<ApiResponse<AuthUser>>('/v1/auth/me'),
+
+  accounts: () => apiRequest<ApiResponse<InstagramAccount[]>>('/v1/ig-accounts'),
+
+  logout: () =>
+    apiRequest<ApiResponse<LogoutResponse>>('/v1/auth/logout', {
+      method: 'POST',
+    }),
+
+  requestReset: (email: string) =>
+    apiRequest<ApiResponse<ResetRequestResponse>>('/v1/auth/reset/request', {
+      method: 'POST',
+      body: JSON.stringify({ email }),
+    }),
+
+  confirmReset: (token: string, password: string) =>
+    apiRequest<ApiResponse<ResetConfirmResponse>>('/v1/auth/reset/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ token, password }),
+    }),
+};
+
+/** Keep API errors user-safe and stable even if the backend message changes. */
+export function formatApiError(error: unknown, fallback = 'Authentication operation failed'): string {
+  const apiError = (error && typeof error === 'object' ? error : {}) as Partial<ApiError>;
+  const messagesByCode: Record<string, string> = {
+    INVALID_CREDENTIALS: 'Email or password is incorrect.',
+    INVALID_SIGNUP_OTP: 'The verification code is invalid or expired.',
+    INVALID_VERIFICATION_TOKEN: 'Your verification expired. Request a new code to continue.',
+    EMAIL_TAKEN: 'An account already exists for this email. Try signing in instead.',
+    META_CONFIG_MISSING: 'Instagram connection is not configured yet.',
+    UNAUTHENTICATED: 'Your session has expired. Please sign in again.',
+  };
+
+  if (apiError.code && messagesByCode[apiError.code]) return messagesByCode[apiError.code];
+
+  const fieldMessage = apiError.fields
+    ? Object.values(apiError.fields).flat().find((message) => typeof message === 'string' && message.trim())
+    : undefined;
+  if (fieldMessage) return fieldMessage;
+
+  return typeof apiError.message === 'string' && apiError.message.trim().length > 0
+    ? apiError.message
+    : fallback;
 }
 
 // Seeded baseline for preview / offline demo
