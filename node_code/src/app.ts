@@ -1,9 +1,12 @@
 import Fastify from 'fastify';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import path from 'node:path';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
+import fastifyStatic from '@fastify/static';
 import rawBody from 'fastify-raw-body';
 import type { Config } from './config.js';
 import type { LogController as LogControllerType } from 'fastify';
@@ -32,6 +35,9 @@ export function buildApp(config: Config) {
     genReqId: () => randomUUID(),
     bodyLimit: 1024 * 1024
   });
+  const frontendRoot = path.resolve(process.cwd(), 'public');
+  const frontendIndex = path.join(frontendRoot, 'index.html');
+  const servesFrontend = existsSync(frontendIndex);
   const database = new Database(config.DATABASE_URL);
   const queue = new BullMqEventQueue(config, (error) => app.log.error({ err: safeError(error) }, 'Redis producer error'));
   const rateLimiter = new RedisRateLimiter(config);
@@ -48,7 +54,15 @@ export function buildApp(config: Config) {
     encoding: false,
     routes: ['/v1/webhooks/instagram']
   });
-  registerSafeErrorHandlers(app);
+  if (servesFrontend) {
+    app.register(fastifyStatic, {
+      root: frontendRoot,
+      index: false,
+      maxAge: '365d',
+      immutable: true
+    });
+  }
+  registerSafeErrorHandlers(app, servesFrontend);
   app.addHook('onSend', async (request, reply, payload) => {
     if (reply.statusCode < 400 || !payload) return payload;
     const contentType = reply.getHeader('content-type');
@@ -61,6 +75,10 @@ export function buildApp(config: Config) {
   });
   app.register(registerRoutes, { config, database, queue, auth, instagramOAuth, rateLimiter });
   app.register(registerHealthRoutes, { database, queue, timeoutMs: config.READINESS_TIMEOUT_MS ?? 2000 });
+
+  if (servesFrontend) {
+    app.get('/', (_request, reply) => reply.type('text/html').sendFile('index.html', { maxAge: 0, immutable: false }));
+  }
 
   app.addHook('onClose', async () => {
     try {

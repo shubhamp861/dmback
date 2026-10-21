@@ -56,7 +56,7 @@ export function withRequestId(body: unknown, requestId: string): unknown {
   return { ...error, requestId };
 }
 
-export function registerSafeErrorHandlers(app: FastifyInstance): void {
+export function registerSafeErrorHandlers(app: FastifyInstance, serveFrontend = false): void {
   app.setErrorHandler((error, request, reply) => {
     const value = property(error, 'statusCode');
     const errorCode = property(error, 'code');
@@ -82,7 +82,17 @@ export function registerSafeErrorHandlers(app: FastifyInstance): void {
       requestId: request.id
     });
   });
-  app.setNotFoundHandler((request, reply) => reply.code(404).send({ code: 'NOT_FOUND', message: 'Route not found', requestId: request.id }));
+  app.setNotFoundHandler((request, reply) => {
+    const pathname = request.url.split('?', 1)[0] ?? request.url;
+    const backendRoute = pathname === '/health' || pathname === '/live' || pathname === '/ready'
+      || pathname === '/v1' || pathname.startsWith('/v1/');
+    const browserNavigation = (request.method === 'GET' || request.method === 'HEAD')
+      && (request.headers.accept?.includes('text/html') ?? false);
+    if (serveFrontend && !backendRoute && browserNavigation) {
+      return reply.type('text/html').sendFile('index.html', { maxAge: 0, immutable: false });
+    }
+    return reply.code(404).send({ code: 'NOT_FOUND', message: 'Route not found', requestId: request.id });
+  });
 }
 
 export function safeLoggerOptions(level: string) {

@@ -42,3 +42,33 @@
 
 - Prefer package scripts, CI, and PowerShell validation scripts over stale prose when they disagree.
 - Read `node_code/PROJECT_CONTEXT.md` for current implementation status and `node_code/devResource/BACKEND-PENDING-TASKS.md` for the backlog; confirm both against source and tests before claiming work is complete.
+
+## Frontend package
+
+- `react-code/` is a separate Vite + React 19 + TypeScript frontend; it is not Next.js and the backend does not use Prisma as its database source of truth.
+- Run frontend commands from `react-code/`: `npm run lint`, `npm run build`, and `npm run dev`.
+- The frontend dev server is configured for `http://127.0.0.1:3001`; the backend API is normally `http://127.0.0.1:3000`. Set `VITE_API_BASE_URL` in the frontend environment when the API origin differs.
+- Frontend API calls use cookie sessions with `credentials: 'include'`; never store the HttpOnly `session` cookie in browser storage, and send the readable `csrf_token` cookie as `x-csrf-token` for mutations.
+- Keep `react-code/src/lib/api.ts` aligned with `node_code/share/API-AUTH-MAPPING.md`; the mapping documents implemented API behavior, not future product screens.
+
+## Email signup authentication
+
+- Registration is a three-step backend flow: `POST /v1/auth/signup/request-otp`, `POST /v1/auth/signup/verify-otp`, then `POST /v1/auth/signup/complete`.
+- OTPs are hashed, six digits, valid for 10 minutes, limited to 5 attempts, and resend-cooldown protected; do not log or return raw OTPs or verification tokens except through their defined response.
+- Migration `005_email_verification.sql` adds email verification state; add later migrations rather than editing applied migration files.
+- The current email provider is `FakeEmailProvider` for development/tests and does not deliver real email; do not claim email delivery works until a provider is implemented and configured.
+- Preserve the existing password login/session flow while changing signup; email authentication and Instagram OAuth are separate concerns.
+
+## Local full-stack smoke setup
+
+- Use the same host spelling for both browser and API (`127.0.0.1` or `localhost`); cookies for those hosts are not interchangeable, and backend `WEB_ORIGIN` must exactly match the frontend origin.
+- Start the backend API and worker separately when using plain development commands, then start the Vite frontend on port 3001; a frontend HTTP 200 only proves the Vite server responded, not that auth/database integration works.
+- Apply development migrations with `npm run db:migrate` before testing the OTP flow against a real database; never use the dedicated integration database for development data.
+
+## Unified production container
+
+- The repository-root `Dockerfile` builds `react-code/` with Vite, builds `node_code/`, and copies the frontend output to the backend image at `/app/public`.
+- Production serving uses Fastify plus `@fastify/static`; `/v1/*`, `/health`, `/live`, and `/ready` remain backend routes, while browser `GET`/`HEAD` navigations fall back to the built `index.html`.
+- Root `docker-compose.yml` uses one image for the web app, migration job, and worker, plus PostgreSQL and Redis; the worker remains a separate process even though it shares the image.
+- The Compose `migrate` service must complete successfully before `app` or `worker` starts; use `scripts/start-production.sh` with a private `.env.production`.
+- Same-origin production should leave `VITE_API_BASE_URL` empty at frontend build time; the browser then calls the existing `/v1` API paths on the served origin.
