@@ -1,0 +1,6 @@
+{
+  "name": "InstaFlow - Instagram Bio Links & Automated DMs",
+  "description": "Mobile-first Instagram link-in-bio builder and keyword-triggered DM automation dashboard with live analytics, campaign manager, and visual link customizer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

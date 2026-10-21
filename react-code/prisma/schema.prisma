@@ -1,0 +1,297 @@
+// Prisma Schema for Instagram Automation Platform (DMlinl)
+// Datasource: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+enum AccountStatus {
+  ACTIVE
+  NEEDS_REAUTH
+  DISCONNECTED
+}
+
+enum TriggerType {
+  COMMENTS_ON_POST
+  STORY_REPLY
+  DIRECT_MENTION
+}
+
+enum KeywordMatchMode {
+  CONTAINS
+  EXACT
+  STARTS_WITH
+  REGEX
+  ANY_COMMENT
+}
+
+enum AutomationStatus {
+  DRAFT
+  LIVE
+  PAUSED
+  ERROR
+}
+
+enum OutcomeStatus {
+  QUEUED
+  SENT
+  SKIPPED
+  FAILED
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  CONVERTED
+}
+
+// -------------------------------------------------------------
+// 1. WORKSPACE & USER AUTHENTICATION
+// -------------------------------------------------------------
+model Workspace {
+  id                String             @id @default(uuid())
+  name              String             @db.VarChar(120)
+  slug              String             @unique
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  memberships       WorkspaceMember[]
+  instagramAccounts InstagramAccount[]
+  automations       Automation[]
+  leads             Lead[]
+  webhookEvents     WebhookEvent[]
+
+  @@map("workspaces")
+}
+
+model User {
+  id           String            @id @default(uuid())
+  email        String            @unique @db.VarChar(320)
+  passwordHash String?           @db.VarChar(256)
+  fullName     String?           @db.VarChar(120)
+  avatarUrl    String?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  memberships  WorkspaceMember[]
+  sessions     Session[]
+
+  @@map("users")
+}
+
+model WorkspaceMember {
+  id          String    @id @default(uuid())
+  workspaceId String
+  userId      String
+  role        UserRole  @default(OWNER)
+  createdAt   DateTime  @default(now())
+
+  workspace   Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@map("workspace_members")
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+// -------------------------------------------------------------
+// 2. META GRAPH API & INSTAGRAM BUSINESS ACCOUNTS
+// -------------------------------------------------------------
+model InstagramAccount {
+  id                String        @id @default(uuid())
+  workspaceId       String
+  igUserId          String        @unique // Meta IG Scoped User ID
+  username          String        @db.VarChar(60)
+  displayName       String?       @db.VarChar(120)
+  profilePictureUrl String?
+  followerCount     Int           @default(0)
+  accountType       String        @default("BUSINESS") // BUSINESS | CREATOR
+  status            AccountStatus @default(ACTIVE)
+
+  // Token storage: Encrypted at rest
+  accessTokenEncrypted String     @db.Text
+  tokenExpiresAt       DateTime?
+  scopes               String[]   @default([])
+
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  workspace         Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  automations       Automation[]
+  triggerEvents     TriggerEvent[]
+  leads             Lead[]
+
+  @@index([workspaceId])
+  @@map("instagram_accounts")
+}
+
+// -------------------------------------------------------------
+// 3. VISUAL FLOW BUILDER & AUTOMATION MODELS
+// -------------------------------------------------------------
+model Automation {
+  id             String           @id @default(uuid())
+  workspaceId    String
+  igAccountId    String
+  name           String           @db.VarChar(120)
+  status         AutomationStatus @default(DRAFT)
+
+  // Step 1: Trigger Node Configuration
+  triggerType    TriggerType      @default(COMMENTS_ON_POST)
+  targetPostId   String           @default("ALL_POSTS") // "ALL_POSTS" or Instagram Media ID
+  targetPostUrl  String?
+  targetPostThumb String?
+
+  // Step 2: Condition Node
+  checkFollower  Boolean          @default(false)
+  nonFollowerMsg String?          @db.Text
+
+  // Step 3: Action Node (Public comment replies & DM sequence)
+  publicReplies  String[]         @default([]) // Rotates public reply variations
+
+  // Step 4: Lead Capture Node
+  captureLead    Boolean          @default(false)
+  leadPromptText String?          @db.Text
+  leadFieldType  String?          @default("EMAIL") // EMAIL | PHONE | BOTH
+
+  // Settings: Daily Caps & Scheduling
+  dailyCap       Int?
+  sentTodayCount Int              @default(0)
+  scheduleTimezone String         @default("UTC")
+  scheduleStartHour Int           @default(0)
+  scheduleEndHour   Int           @default(24)
+
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  workspace      Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  igAccount      InstagramAccount @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
+  keywordRules   KeywordRule[]
+  messageVariations MessageVariation[]
+  triggerEvents  TriggerEvent[]
+  leads          Lead[]
+
+  @@index([workspaceId])
+  @@index([igAccountId])
+  @@map("automations")
+}
+
+model KeywordRule {
+  id           String           @id @default(uuid())
+  automationId String
+  value        String           @db.VarChar(200)
+  mode         KeywordMatchMode @default(CONTAINS)
+  caseSensitive Boolean         @default(false)
+
+  automation   Automation       @relation(fields: [automationId], references: [id], onDelete: Cascade)
+
+  @@map("keyword_rules")
+}
+
+// Smart DM Rotation: rotate up to 10 message variations to bypass spam filters
+model MessageVariation {
+  id           String     @id @default(uuid())
+  automationId String
+  versionIndex Int        @default(1)
+  bodyText     String     @db.Text // Supports {{first_name}}, {{username}}
+  buttonLabel  String?    @db.VarChar(80)
+  redirectUrl  String?    @db.Text
+
+  automation   Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+
+  @@map("message_variations")
+}
+
+// -------------------------------------------------------------
+// 4. TRIGGER EVENTS & IDEMPOTENT OUTBOX LOGS
+// -------------------------------------------------------------
+model TriggerEvent {
+  id             String        @id @default(uuid())
+  igAccountId    String
+  automationId   String
+  commentId      String        @unique // Meta Comment ID prevents duplicate sends
+  commenterId    String
+  commenterUser  String        @db.VarChar(60)
+  commentText    String?       @db.Text
+  matchedKeyword String?       @db.VarChar(120)
+  outcome        OutcomeStatus @default(QUEUED)
+  reasonCode     String?       @db.VarChar(60)
+  attempts       Int           @default(0)
+  sentAt         DateTime?
+  createdAt      DateTime      @default(now())
+
+  igAccount      InstagramAccount @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
+  automation     Automation       @relation(fields: [automationId], references: [id], onDelete: Cascade)
+
+  @@index([automationId])
+  @@index([commentId])
+  @@map("trigger_events")
+}
+
+// -------------------------------------------------------------
+// 5. CAPTURED LEADS (CRM TABLE)
+// -------------------------------------------------------------
+model Lead {
+  id            String     @id @default(uuid())
+  workspaceId   String
+  igAccountId   String
+  automationId  String
+  igUsername    String     @db.VarChar(60)
+  fullName      String?    @db.VarChar(120)
+  email         String?    @db.VarChar(320)
+  phone         String?    @db.VarChar(40)
+  sourcePostId  String?
+  sourcePostCap String?
+  status        LeadStatus @default(NEW)
+  capturedAt    DateTime   @default(now())
+
+  workspace     Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  igAccount     InstagramAccount @relation(fields: [igAccountId], references: [id], onDelete: Cascade)
+  automation    Automation @relation(fields: [automationId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([email])
+  @@index([igUsername])
+  @@map("leads")
+}
+
+// -------------------------------------------------------------
+// 6. META WEBHOOK EVENTS & AUDITED REPLAY LOGS
+// -------------------------------------------------------------
+model WebhookEvent {
+  id            String    @id @default(uuid())
+  workspaceId   String
+  payloadHash   String    @unique
+  rawPayload    Json
+  processed     Boolean   @default(false)
+  replayCount   Int       @default(0)
+  createdAt     DateTime  @default(now())
+
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@map("webhook_events")
+}
