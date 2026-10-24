@@ -5,8 +5,20 @@
 **Backend source of truth:** `backend/src/routes.ts` and
 the related source files referenced in this document.
 
-**Document status:** Replay/security addendum reviewed 2026-10-19; older examples
+**Document status:** Google sign-in and replay/security addendum reviewed 2026-10-24; older examples
 below may still use legacy shell paths.
+
+## Latest addition: Google sign-up
+
+The frontend sign-up path uses Google Identity Services. The browser renders
+Google's button and posts the returned ID token to `POST /v1/auth/google`; the
+backend verifies the token against Google's JWKS and issues the normal session
+and CSRF cookies. No client secret or redirect URI is involved. The legacy OTP
+signup endpoints remain implemented but are no longer used by the frontend.
+
+`POST /v1/auth/google` requires the backend `GOOGLE_CLIENT_ID` to match the
+frontend `VITE_GOOGLE_CLIENT_ID`. Apply migration `006_google_auth.sql` before
+using it.
 
 ## Latest addition: audited webhook replay
 
@@ -201,7 +213,7 @@ database, provider, stack-trace, token, or secret values to users.
 | `401` | No valid session or invalid login | Clear auth state or show login error |
 | `403` | CSRF failure or webhook verification failure | Refresh session/CSRF or show configuration error |
 | `404` | Resource does not exist or is outside workspace | Show not-found state |
-| `409` | Signup email already exists | Show account-exists message |
+| `409` | Email already registered or Google identity conflict | Show account-exists or conflict message |
 | `503` | Dependency/configuration unavailable | Show retry/setup state |
 
 ## 4. Authentication model
@@ -249,9 +261,9 @@ The header must exactly equal the `csrf_token` cookie. Missing or invalid CSRF:
 }
 ```
 
-Signup, login, logout, password reset routes, and Instagram OAuth routes do not
-currently require CSRF. The Instagram webhook POST uses Meta HMAC verification,
-not browser session authentication.
+Signup, Google sign-in, login, logout, password reset routes, and Instagram OAuth
+routes do not currently require CSRF. The Instagram webhook POST uses Meta HMAC
+verification, not browser session authentication.
 
 ### Auth state flow
 
@@ -324,10 +336,11 @@ JSON.
 }
 ```
 
-### Email-verification OTP signup
+### Email-verification OTP signup (legacy)
 
-The recommended signup flow is a three-step sequence. The legacy
-`POST /v1/auth/signup` endpoint remains available for existing clients.
+This three-step flow remains implemented for existing clients, but the current
+frontend creates accounts with `POST /v1/auth/google` instead. The legacy
+`POST /v1/auth/signup` endpoint also remains available.
 
 #### `POST /v1/auth/signup/request-otp`
 
@@ -419,6 +432,76 @@ The response sets the existing `session` (HttpOnly) and `csrf_token` cookies;
 their JSON values are never returned. Invalid or replayed tokens return
 `400 INVALID_VERIFICATION_TOKEN`; a duplicate email at completion returns
 `409 EMAIL_TAKEN`.
+
+### `POST /v1/auth/google`
+
+Creates or reuses an account from a Google Identity Services ID token, then sets
+the normal `session` and `csrf_token` cookies.
+
+#### Request
+
+```json
+{
+  "credential": "google-id-token"
+}
+```
+
+| Field | Required | Rules |
+| --- | ---: | --- |
+| `credential` | Yes | 20–8192 chars; ID token returned by Google Identity Services |
+
+The backend verifies the token signature with Google's published keys, the
+Google issuer, the configured client ID as audience, and requires a verified
+email. The client must obtain the credential with the client ID from
+`VITE_GOOGLE_CLIENT_ID`; the backend only accepts tokens issued for its
+`GOOGLE_CLIENT_ID`.
+
+#### Success
+
+```http
+200 OK
+```
+
+```json
+{
+  "data": {
+    "id": "user-uuid",
+    "email": "person@example.com",
+    "workspaceId": "workspace-uuid",
+    "role": "owner"
+  }
+}
+```
+
+Cookies are set by the response. The session/CSRF values are not returned in
+JSON.
+
+Behavior:
+
+- A first-time Google user is created with `google_sub`, the email is marked
+  verified, and an owner workspace is created from the Google display name.
+- A returning Google user reuses the same user, workspace, and role.
+- If a password account already exists for the same verified email, the Google
+  identity is linked to it and its existing workspace is used.
+- If that email is already linked to a different Google account, the request
+  fails without changing data.
+
+#### Errors
+
+- `400 VALIDATION_ERROR` — missing or malformed credential field.
+- `401 INVALID_GOOGLE_TOKEN` — token verification failed, or Google returned no
+  usable identity.
+- `403 GOOGLE_EMAIL_UNVERIFIED` — the Google email is not verified.
+- `409 GOOGLE_ACCOUNT_CONFLICT` — the email belongs to a different Google
+  identity.
+- `503 GOOGLE_CONFIG_MISSING` — backend `GOOGLE_CLIENT_ID` is not configured.
+
+```json
+{
+  "code": "GOOGLE_ACCOUNT_CONFLICT",
+  "message": "This email is already linked to a different Google account"
+}
+```
 
 ### `POST /v1/auth/login`
 
@@ -1354,6 +1437,12 @@ function csrfHeaders(): HeadersInit {
 
 ```ts
 const authApi = {
+  googleSignIn: (credential: string) =>
+    apiRequest<ApiResponse<AuthUser>>('/v1/auth/google', {
+      method: 'POST',
+      body: JSON.stringify({ credential })
+    }),
+  // Legacy OTP signup endpoints, retained by the backend but not used by the UI.
   signupRequestOtp: (email: string) =>
     apiRequest<ApiResponse<{ accepted: boolean }>>('/v1/auth/signup/request-otp', {
       method: 'POST',
@@ -1425,7 +1514,7 @@ const workspaceApi = {
 | --- | --- |
 | App boot/auth restore | `GET /v1/auth/me` |
 | Login | `POST /v1/auth/login` |
-| Signup/onboarding | `POST /v1/auth/signup/request-otp` → `POST /v1/auth/signup/verify-otp` → `POST /v1/auth/signup/complete` |
+| Signup/onboarding | Google Identity Services button → `POST /v1/auth/google` with the returned ID token |
 | Logout menu | `POST /v1/auth/logout` |
 | Forgot password request | `POST /v1/auth/reset/request` |
 | Reset password page | `POST /v1/auth/reset/confirm` |
@@ -1453,14 +1542,13 @@ Loading -> GET /v1/auth/me
 ### Signup
 
 ```text
-Signup email -> POST /v1/auth/signup/request-otp
-  202 -> show generic “If eligible, a code was sent” state
-OTP form -> POST /v1/auth/signup/verify-otp
-  200 -> keep verificationToken in memory and show password/workspace form
-Signup completion -> POST /v1/auth/signup/complete
-  201 -> browser has session + csrf_token cookies; show workspace app
-  400 -> render validation/invalid-code errors
-  409 -> show email already registered
+Google button (GIS) -> Google returns an ID token credential
+   -> POST /v1/auth/google { credential }
+  200 -> browser has session + csrf_token cookies; show workspace app
+  401 -> verification failed; ask the user to retry
+  403 -> Google email is unverified
+  409 -> this email is linked to a different Google account
+  503 -> backend GOOGLE_CLIENT_ID is not configured
 ```
 
 ### Login
@@ -1583,6 +1671,7 @@ product owner:
 | --- | --- |
 | Route paths/status/errors | `backend/src/routes.ts` |
 | Session/password/reset behavior | `backend/src/auth.ts` |
+| Google ID-token verification | `backend/src/google-auth.ts` |
 | Request automation schema | `backend/src/domain/automation.ts` |
 | Keyword matching | `backend/src/domain/keyword-matcher.ts` |
 | Database response shapes | `backend/src/db.ts` |

@@ -28,7 +28,8 @@ describe('migration tracking', () => {
     const migrations = await loadMigrations(fileURLToPath(new URL('../migrations/', import.meta.url)));
 
     expect(migrations.map((candidate) => candidate.name)).toEqual([
-      '001_initial.sql', '002_webhook_replays.sql', '003_idempotency_keys.sql', '004_cursor_pagination.sql', '005_email_verification.sql'
+      '001_initial.sql', '002_webhook_replays.sql', '003_idempotency_keys.sql', '004_cursor_pagination.sql',
+      '005_email_verification.sql', '006_google_auth.sql'
     ]);
     for (const candidate of migrations) expect(candidate.checksum).toMatch(/^[a-f0-9]{64}$/);
     expect(migrations[0]?.sql).toContain('CREATE TABLE IF NOT EXISTS schema_migrations');

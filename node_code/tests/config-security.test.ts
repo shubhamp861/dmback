@@ -10,6 +10,7 @@ const deployment = {
   REDIS_URL: 'rediss://app:2289561f8d704359@cache.dmlink.internal:6380',
   META_APP_ID: '123456789012345', META_APP_SECRET: '831f864d7abb88b6433b3b1011d25e01',
   META_WEBHOOK_VERIFY_TOKEN: 'aec428eddd871f01bf8d59f99f3d412e', TOKEN_ENCRYPTION_KEY: key,
+  GOOGLE_CLIENT_ID: '123456789012-abcdefghijklmnopqrstuvwxyz123456.apps.googleusercontent.com',
   META_REDIRECT_URI: 'https://api.dmlink.test/v1/auth/instagram/callback',
   META_API_VERSION: 'v23.0', WEB_ORIGIN: 'https://app.dmlink.test'
 };
@@ -26,7 +27,7 @@ describe('configuration security', () => {
 
   it.each([
     'DATABASE_URL', 'REDIS_URL', 'META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI',
-    'META_API_VERSION', 'META_WEBHOOK_VERIFY_TOKEN', 'TOKEN_ENCRYPTION_KEY', 'WEB_ORIGIN'
+    'META_API_VERSION', 'META_WEBHOOK_VERIFY_TOKEN', 'GOOGLE_CLIENT_ID', 'TOKEN_ENCRYPTION_KEY', 'WEB_ORIGIN'
   ])('requires explicit deployment configuration: %s', (field) => {
     const environment: NodeJS.ProcessEnv = { ...deployment };
     delete environment[field];
@@ -37,6 +38,7 @@ describe('configuration security', () => {
     ['META_APP_ID', 'development-app-id'], ['META_APP_SECRET', 'development-app-secret'],
     ['META_APP_SECRET', 'replace-with-a-long-production-app-secret'],
     ['META_WEBHOOK_VERIFY_TOKEN', 'change-me-to-a-long-production-token'],
+    ['GOOGLE_CLIENT_ID', 'development-google-client-id.apps.googleusercontent.com'],
     ['DATABASE_URL', 'postgres://instagram:instagram@pg.dmlink.internal/app'],
     ['REDIS_URL', 'redis://localhost:6379'],
     ['TOKEN_ENCRYPTION_KEY', loadConfig({}).TOKEN_ENCRYPTION_KEY],

@@ -4,6 +4,7 @@ import { hashToken, type AuthContext, type AuthService } from './auth.js';
 import { hasPermission, type Permission } from './authorization.js';
 import { automationInputSchema } from './domain/automation.js';
 import { InstagramOAuthError, type InstagramOAuthService } from './instagram/oauth.js';
+import { GoogleAuthError, type GoogleIdentity, type GoogleIdentityService } from './google-auth.js';
 import { verifyMetaSignature, sha256Hex } from './instagram/signature.js';
 import { extractCommentEvents, parseInstagramWebhook } from './instagram/webhook.js';
 import type { Config } from './config.js';
@@ -20,6 +21,7 @@ interface RouteDependencies {
   queue: EventQueue;
   auth: AuthService;
   instagramOAuth: InstagramOAuthService;
+  googleAuth?: GoogleIdentityService;
   rateLimiter?: RateLimiter;
 }
 
@@ -42,6 +44,9 @@ const signupCompleteSchema = z.object({
 const loginSchema = z.object({
   email: z.string().trim().email().max(320),
   password: z.string().min(1).max(256)
+});
+const googleSignInSchema = z.object({
+  credential: z.string().min(20).max(8192)
 });
 const resetRequestSchema = z.object({ email: z.string().trim().email().max(320) });
 const resetConfirmSchema = z.object({ token: z.string().min(20).max(256), password: z.string().min(12).max(256) });
@@ -224,6 +229,36 @@ export async function registerRoutes(app: FastifyInstance, dependencies: RouteDe
     return reply.send({ data: credentials.user });
   });
 
+  app.post('/v1/auth/google', async (request, reply) => {
+    if (!await enforceRateLimit(request, reply, rateLimiter, config, `auth-ip:${request.ip}`, config.RATE_LIMIT_AUTH_IP_MAX ?? 20)) return;
+    const parsed = googleSignInSchema.safeParse(request.body);
+    if (!parsed.success) return validationError(reply, parsed.error);
+    if (!dependencies.googleAuth) {
+      return reply.code(503).send({ code: 'GOOGLE_CONFIG_MISSING', message: 'Google sign-in is not configured' });
+    }
+
+    let identity: GoogleIdentity;
+    try {
+      identity = await dependencies.googleAuth.verifyCredential(parsed.data.credential);
+    } catch (error) {
+      return sendGoogleAuthError(reply, error);
+    }
+
+    const result = await auth.signInWithGoogle({
+      googleSub: identity.googleSub,
+      email: identity.email,
+      ...(identity.displayName ? { displayName: identity.displayName } : {})
+    });
+    if (result.kind === 'conflict') {
+      return reply.code(409).send({
+        code: 'GOOGLE_ACCOUNT_CONFLICT',
+        message: 'This email is already linked to a different Google account'
+      });
+    }
+    setAuthCookies(reply, config, result.credentials.sessionToken, result.credentials.csrfToken);
+    return reply.send({ data: result.credentials.user });
+  });
+
   app.post('/v1/auth/logout', async (request, reply) => {
     if (!await enforceRateLimit(request, reply, rateLimiter, config, `auth-ip:${request.ip}`, config.RATE_LIMIT_AUTH_IP_MAX ?? 20)) return;
     await auth.logout(request.cookies[AUTH_COOKIE]);
@@ -263,6 +298,20 @@ export async function registerRoutes(app: FastifyInstance, dependencies: RouteDe
     } catch (error) {
       return sendInstagramOAuthError(reply, error);
     }
+  });
+
+  // Instagram only accepts HTTPS redirect URIs, but local development runs on
+  // http://localhost. Meta redirects to the HTTPS tunnel, which lands here and
+  // bounces the browser back to localhost so the session cookie is available.
+  app.get('/v1/auth/instagram/relay', async (request, reply) => {
+    if (!await enforceRateLimit(request, reply, rateLimiter, config, `ig-relay-ip:${request.ip}`, config.RATE_LIMIT_AUTH_IP_MAX ?? 20)) return;
+    const query = instagramOAuthCallbackSchema.safeParse(request.query);
+    if (!query.success) return validationError(reply, query.error);
+    const local = new URL(`http://localhost:${config.PORT}/v1/auth/instagram/callback`);
+    for (const [key, value] of Object.entries(query.data)) {
+      if (value !== undefined) local.searchParams.set(key, value);
+    }
+    return reply.redirect(local.toString());
   });
 
   app.get('/v1/auth/instagram/callback', async (request, reply) => {
@@ -577,6 +626,22 @@ function validationError(reply: { code: (status: number) => { send: (body: unkno
 
 function isUniqueViolation(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && error.code === '23505';
+}
+
+function sendGoogleAuthError(reply: { code: (status: number) => { send: (body: unknown) => unknown } }, error: unknown) {
+  if (error instanceof GoogleAuthError) {
+    const status = error.code === 'GOOGLE_CONFIG_MISSING' ? 503
+      : error.code === 'GOOGLE_EMAIL_UNVERIFIED' ? 403
+      : 401;
+    const messages = {
+      GOOGLE_CONFIG_MISSING: 'Google sign-in is not configured',
+      INVALID_GOOGLE_TOKEN: 'Google sign-in could not be verified',
+      GOOGLE_EMAIL_UNVERIFIED: 'The Google email address is not verified'
+    } as const;
+    if (!Object.hasOwn(messages, error.code)) throw error;
+    return reply.code(status).send({ code: error.code, message: messages[error.code] });
+  }
+  throw error;
 }
 
 function sendInstagramOAuthError(reply: { code: (status: number) => { send: (body: unknown) => unknown } }, error: unknown) {

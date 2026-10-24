@@ -257,6 +257,12 @@ export const authApi = {
       body: JSON.stringify(input),
     }),
 
+  googleSignIn: (credential: string) =>
+    apiRequest<ApiResponse<AuthUser>>('/v1/auth/google', {
+      method: 'POST',
+      body: JSON.stringify({ credential }),
+    }),
+
   me: () => apiRequest<ApiResponse<AuthUser>>('/v1/auth/me'),
 
   accounts: () => apiRequest<ApiResponse<InstagramAccount[]>>('/v1/ig-accounts'),
@@ -287,6 +293,10 @@ export function formatApiError(error: unknown, fallback = 'Authentication operat
     INVALID_SIGNUP_OTP: 'The verification code is invalid or expired.',
     INVALID_VERIFICATION_TOKEN: 'Your verification expired. Request a new code to continue.',
     EMAIL_TAKEN: 'An account already exists for this email. Try signing in instead.',
+    GOOGLE_CONFIG_MISSING: 'Google sign-in is not configured yet.',
+    INVALID_GOOGLE_TOKEN: 'Google sign-in could not be verified. Please try again.',
+    GOOGLE_EMAIL_UNVERIFIED: 'That Google email address is not verified.',
+    GOOGLE_ACCOUNT_CONFLICT: 'This email is already linked to a different Google account.',
     META_CONFIG_MISSING: 'Instagram connection is not configured yet.',
     UNAUTHENTICATED: 'Your session has expired. Please sign in again.',
   };

@@ -3,7 +3,9 @@ import { z } from 'zod';
 const commentChangeSchema = z.object({
   field: z.literal('comments'),
   value: z.object({
-    id: z.string(),
+    // Instagram Login sends comment_id; value.id is kept for older payload shapes.
+    comment_id: z.string().optional(),
+    id: z.string().optional(),
     text: z.string().optional(),
     from: z.object({ id: z.string(), username: z.string().optional() }).optional(),
     media: z.object({ id: z.string() }).optional(),
@@ -45,9 +47,11 @@ export function extractCommentEvents(payload: InstagramWebhookPayload): CommentE
       const result = commentChangeSchema.safeParse(rawChange);
       if (!result.success) continue;
       const value = result.data.value;
+      const commentId = value.comment_id ?? value.id;
+      if (!commentId) continue;
       events.push({
         accountId: entry.id,
-        commentId: value.id,
+        commentId,
         commentText: value.text ?? '',
         ...(value.from?.id ? { igsid: value.from.id } : {}),
         ...(value.from?.username ? { username: value.from.username } : {}),

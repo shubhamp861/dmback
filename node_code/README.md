@@ -165,6 +165,46 @@ applied file is changed or removed. Inspect the current state with:
 npm run db:migrate:status
 ```
 
+### Google sign-up (local development)
+
+New accounts are created with Google Identity Services instead of email OTPs.
+The flow is free and needs no billing account: the browser obtains a Google ID
+token and the backend verifies it. No client secret or redirect URI is used.
+
+One-time Google Cloud setup:
+
+1. Create or select a project at <https://console.cloud.google.com/>.
+2. Configure the OAuth consent screen (External is fine). While the publishing
+   status is **Testing**, add each Google account that will sign in as a test
+   user; Google caps test users at 100.
+3. Open **APIs & Services > Credentials**, choose **Create credentials >
+   OAuth client ID**, and select **Web application**.
+4. Under **Authorized JavaScript origins** add `http://localhost:3001`. Add
+   `http://127.0.0.1:3001` only if you browse the frontend at that host too.
+   Do not add a path, query, or trailing slash.
+5. Copy the generated client ID (it ends with `.apps.googleusercontent.com`)
+   into both files and keep them exactly equal:
+   - `node_code/.env`: `GOOGLE_CLIENT_ID=...`
+   - `react-code/.env`: `VITE_GOOGLE_CLIENT_ID=...`
+
+Restart the API and Vite after editing either `.env` file
+(`scripts\windows\stop.bat`, then `scripts\windows\run.bat`). When
+`GOOGLE_CLIENT_ID` is empty, the backend returns `503 GOOGLE_CONFIG_MISSING`
+and the frontend hides the Google button with a configuration hint.
+
+Behavior:
+
+- First sign-in creates a user (`google_sub`), marks the email verified, and
+  creates an owner workspace named after the Google display name.
+- Returning sign-in reuses the same user, workspace, and role.
+- An existing password account with the same verified email is linked to the
+  Google account and keeps its existing workspace.
+- If that email is already linked to a different Google account, the API returns
+  `409 GOOGLE_ACCOUNT_CONFLICT`.
+
+Email/password login and the seeded development account still work. The OTP
+signup endpoints remain for compatibility but are no longer shown in the UI.
+
 ## Insert local test data
 
 The seed command is repeatable and safe to run more than once:
@@ -647,7 +687,7 @@ session-bound OAuth state. Configure real Meta credentials before using it:
 META_APP_ID=your-meta-app-id
 META_APP_SECRET=your-meta-app-secret
 META_REDIRECT_URI=http://localhost:3000/v1/auth/instagram/callback
-META_API_VERSION=v23.0
+META_API_VERSION=v26.0
 META_GRAPH_BASE_URL=https://graph.instagram.com
 META_OAUTH_BASE_URL=https://api.instagram.com
 META_INSTAGRAM_SCOPES=instagram_business_basic,instagram_business_manage_comments,instagram_business_manage_messages

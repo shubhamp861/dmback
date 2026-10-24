@@ -31,11 +31,15 @@ const envSchema = z.object({
   META_APP_ID: z.string().min(1).default('development-app-id'),
   META_APP_SECRET: z.string().min(1).default('development-app-secret'),
   META_REDIRECT_URI: z.string().url().default('http://localhost:3000/v1/auth/instagram/callback'),
-  META_API_VERSION: z.string().regex(/^v\d+\.\d+$/).default('v23.0'),
+  META_API_VERSION: z.string().regex(/^v\d+\.\d+$/).default('v26.0'),
   META_GRAPH_BASE_URL: z.string().url().default('https://graph.instagram.com'),
   META_OAUTH_BASE_URL: z.string().url().default('https://api.instagram.com'),
   META_INSTAGRAM_SCOPES: z.string().default('instagram_business_basic,instagram_business_manage_comments,instagram_business_manage_messages'),
   META_WEBHOOK_VERIFY_TOKEN: z.string().min(1).default('development-verify-token'),
+  GOOGLE_CLIENT_ID: z.preprocess(
+    value => (typeof value === 'string' && value.trim() === '' ? undefined : value),
+    z.string().trim().min(1).regex(/\.apps\.googleusercontent\.com$/i).optional()
+  ),
   TOKEN_ENCRYPTION_KEY: z.string().refine(isValidTokenEncryptionKey).default(DEFAULT_ENCRYPTION_KEY),
   WEB_ORIGIN: z.string().url().default('http://localhost:3001'),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info')
@@ -45,7 +49,8 @@ export type Config = z.infer<typeof envSchema>;
 
 const deploymentFields = [
   'DATABASE_URL', 'REDIS_URL', 'META_APP_ID', 'META_APP_SECRET', 'META_REDIRECT_URI',
-  'META_API_VERSION', 'META_WEBHOOK_VERIFY_TOKEN', 'TOKEN_ENCRYPTION_KEY', 'WEB_ORIGIN'
+  'META_API_VERSION', 'META_WEBHOOK_VERIFY_TOKEN', 'GOOGLE_CLIENT_ID',
+  'TOKEN_ENCRYPTION_KEY', 'WEB_ORIGIN'
 ] as const;
 
 // Deliberately recognize known placeholder vocabulary, not arbitrary low-entropy guesses.
@@ -106,13 +111,17 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): Config
   } else if (deployment) {
     const config = result.data;
     for (const field of deploymentFields) {
-      if (isPlaceholder(config[field])) errors.push(`${field}: must not use a placeholder value`);
+      const value = config[field];
+      if (value !== undefined && isPlaceholder(value)) errors.push(`${field}: must not use a placeholder value`);
     }
     for (const field of ['DATABASE_URL', 'REDIS_URL'] as const) {
       if (hasPlaceholderUrl(config[field])) errors.push(`${field}: must not use a development or placeholder endpoint or credential`);
     }
     for (const field of ['META_APP_SECRET', 'META_WEBHOOK_VERIFY_TOKEN'] as const) {
       if (config[field].trim().length < 32) errors.push(`${field}: must contain at least 32 characters`);
+    }
+    if (config.GOOGLE_CLIENT_ID && isPlaceholder(config.GOOGLE_CLIENT_ID)) {
+      errors.push('GOOGLE_CLIENT_ID: must not use a placeholder value');
     }
     for (const field of ['META_REDIRECT_URI', 'WEB_ORIGIN', 'META_GRAPH_BASE_URL', 'META_OAUTH_BASE_URL'] as const) {
       if (!isSecureEndpoint(config[field])) errors.push(`${field}: must use HTTPS without credentials or placeholder hosts`);

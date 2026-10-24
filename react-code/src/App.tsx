@@ -170,17 +170,8 @@ export default function App() {
     setActiveTab(featureAttempted ? 'dashboard' : activeTab);
   };
 
-  const handleSignupRequestOtp = async (email: string) => {
-    await authApi.signupRequestOtp(email);
-  };
-
-  const handleSignupVerifyOtp = async (email: string, otp: string) => {
-    const response = await authApi.signupVerifyOtp(email, otp);
-    return response.data.verificationToken;
-  };
-
-  const handleSignupComplete = async (verificationToken: string, password: string, workspaceName: string) => {
-    const response = await authApi.signupComplete(verificationToken, password, workspaceName);
+  const handleGoogleSignIn = async (credential: string) => {
+    const response = await authApi.googleSignIn(credential);
     setCurrentUser(response.data);
     setActiveTab('dashboard');
   };
@@ -604,9 +595,7 @@ export default function App() {
          currentUser={currentUser}
          accounts={accounts}
          onLogin={handleEmailLogin}
-         onSignupRequestOtp={handleSignupRequestOtp}
-         onSignupVerifyOtp={handleSignupVerifyOtp}
-         onSignupComplete={handleSignupComplete}
+         onGoogleSignIn={handleGoogleSignIn}
          onLogout={handleLogout}
          onRequestReset={handleRequestReset}
        />

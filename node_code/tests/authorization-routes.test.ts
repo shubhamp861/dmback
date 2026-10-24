@@ -51,7 +51,7 @@ async function setup(role: string = 'owner') {
   // These deliberately narrow doubles implement only the exercised methods;
   // production dependencies retain their concrete service types.
   await registerRoutes(app, {
-    config: { NODE_ENV: 'test' } as Config,
+    config: { NODE_ENV: 'test', PORT: 3000 } as Config,
     database: database as unknown as Parameters<typeof registerRoutes>[1]['database'],
     queue: {} as Parameters<typeof registerRoutes>[1]['queue'],
     auth: { authenticate } as unknown as Parameters<typeof registerRoutes>[1]['auth'],
@@ -131,6 +131,21 @@ describe('protected route authorization', () => {
       });
     }
   }
+});
+
+describe('instagram oauth relay', () => {
+  it('bounces the HTTPS tunnel callback back to localhost without completing the flow', async () => {
+    const { app, instagramOAuth, authenticate } = await setup();
+    try {
+      const response = await app.inject('/v1/auth/instagram/relay?code=code&state=abcdefghijklmnopqrst');
+      expect(response.statusCode).toBe(302);
+      expect(response.headers.location).toBe(
+        'http://localhost:3000/v1/auth/instagram/callback?code=code&state=abcdefghijklmnopqrst'
+      );
+      expect(authenticate).not.toHaveBeenCalled();
+      expect(instagramOAuth.completeAuthorization).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
 });
 
 describe('workspace boundaries', () => {

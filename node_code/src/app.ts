@@ -13,6 +13,7 @@ import type { LogController as LogControllerType } from 'fastify';
 import { AuthService } from './auth.js';
 import { FakeEmailProvider } from './email.js';
 import { Database } from './db.js';
+import { GoogleIdentityService } from './google-auth.js';
 import { InstagramOAuthService } from './instagram/oauth.js';
 import { BullMqEventQueue } from './queue.js';
 import { RedisRateLimiter } from './rate-limit.js';
@@ -43,6 +44,7 @@ export function buildApp(config: Config) {
   const rateLimiter = new RedisRateLimiter(config);
   database.pool.on('error', (error) => app.log.error({ err: safeError(error) }, 'Database pool error'));
   const auth = new AuthService(database, new FakeEmailProvider());
+  const googleAuth = new GoogleIdentityService(config);
   const instagramOAuth = new InstagramOAuthService(database, config);
 
   app.register(cookie);
@@ -73,7 +75,7 @@ export function buildApp(config: Config) {
       return payload;
     }
   });
-  app.register(registerRoutes, { config, database, queue, auth, instagramOAuth, rateLimiter });
+  app.register(registerRoutes, { config, database, queue, auth, instagramOAuth, googleAuth, rateLimiter });
   app.register(registerHealthRoutes, { database, queue, timeoutMs: config.READINESS_TIMEOUT_MS ?? 2000 });
 
   if (servesFrontend) {

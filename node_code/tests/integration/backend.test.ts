@@ -2,6 +2,7 @@ import { createHmac, randomUUID } from 'node:crypto';
 import { Worker } from 'bullmq';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.js';
+import { AuthService } from '../../src/auth.js';
 import { BullMqEventQueue, MATCH_COMMENT_QUEUE, type MatchCommentJob } from '../../src/queue.js';
 import { dispatchWebhookOutbox, dispatchWebhookReplays, processWebhookEvent, processWebhookReplay } from '../../src/processing.js';
 import { parsePaginationQuery } from '../../src/pagination.js';
@@ -36,7 +37,7 @@ describe('real PostgreSQL, Redis, Fastify and worker integration', () => {
 
   function payload(commentId: string, time = 1) {
     return { object: 'instagram', entry: [{ id: igUserId, time, changes: [
-      { field: 'comments', value: { id: commentId, text: 'guide please', from: { id: 'synthetic-contact' } } }
+      { field: 'comments', value: { comment_id: commentId, text: 'guide please', from: { id: 'synthetic-contact' } } }
     ] }] };
   }
 
@@ -55,7 +56,7 @@ describe('real PostgreSQL, Redis, Fastify and worker integration', () => {
     await eventually(async () => {
       const result = await context.database.pool.query(
         `SELECT count(*)::int AS total, count(processed_at)::int AS processed
-         FROM webhook_events WHERE payload->'entry'->0->'changes'->0->'value'->>'id' = $1`, [commentId]);
+         FROM webhook_events WHERE COALESCE(payload->'entry'->0->'changes'->0->'value'->>'comment_id', payload->'entry'->0->'changes'->0->'value'->>'id') = $1`, [commentId]);
       expect(result.rows[0]).toEqual({ total: webhookCount, processed: webhookCount });
     });
   }
@@ -106,7 +107,7 @@ describe('real PostgreSQL, Redis, Fastify and worker integration', () => {
     expect((await sendWebhook(payload(commentId), false)).statusCode).toBe(401);
     const result = await context.database.pool.query(
       `SELECT count(*)::int AS total FROM webhook_events
-       WHERE payload->'entry'->0->'changes'->0->'value'->>'id' = $1`, [commentId]);
+       WHERE COALESCE(payload->'entry'->0->'changes'->0->'value'->>'comment_id', payload->'entry'->0->'changes'->0->'value'->>'id') = $1`, [commentId]);
     expect(result.rows[0].total).toBe(0);
   });
 
@@ -121,7 +122,7 @@ describe('real PostgreSQL, Redis, Fastify and worker integration', () => {
     const outbox = await context.database.pool.query(
       `SELECT count(*)::int AS total FROM webhook_event_outbox o
        JOIN webhook_events e ON e.id = o.webhook_event_id
-       WHERE e.payload->'entry'->0->'changes'->0->'value'->>'id' = $1`, [commentId]);
+       WHERE COALESCE(e.payload->'entry'->0->'changes'->0->'value'->>'comment_id', e.payload->'entry'->0->'changes'->0->'value'->>'id') = $1`, [commentId]);
     expect(outbox.rows[0].total).toBe(1);
   });
 
@@ -133,7 +134,7 @@ describe('real PostgreSQL, Redis, Fastify and worker integration', () => {
     expect(await eventsFor(commentId)).toHaveLength(1);
     // Independently replay the real processor concurrently, bypassing BullMQ job deduplication.
     const stored = await context.database.pool.query(
-      `SELECT id FROM webhook_events WHERE payload->'entry'->0->'changes'->0->'value'->>'id' = $1`, [commentId]);
+      `SELECT id FROM webhook_events WHERE COALESCE(payload->'entry'->0->'changes'->0->'value'->>'comment_id', payload->'entry'->0->'changes'->0->'value'->>'id') = $1`, [commentId]);
     await Promise.all(Array.from({ length: 8 }, (_, index) =>
       processWebhookEvent(context.database, stored.rows[index % 2].id as string)));
     expect(await eventsFor(commentId)).toHaveLength(1);
@@ -153,7 +154,7 @@ describe('real PostgreSQL, Redis, Fastify and worker integration', () => {
       const stored = await context.database.pool.query(
         `SELECT e.id, e.processed_at, o.status, o.last_error FROM webhook_events e
          JOIN webhook_event_outbox o ON o.webhook_event_id = e.id
-         WHERE e.payload->'entry'->0->'changes'->0->'value'->>'id' = $1`, [commentId]);
+         WHERE COALESCE(e.payload->'entry'->0->'changes'->0->'value'->>'comment_id', e.payload->'entry'->0->'changes'->0->'value'->>'id') = $1`, [commentId]);
       expect(stored.rows).toHaveLength(1);
       expect(stored.rows[0]).toMatchObject({ processed_at: null, status: 'failed', last_error: 'QUEUE_DISPATCH_FAILED' });
       expect(await eventsFor(commentId)).toHaveLength(0);
@@ -296,7 +297,7 @@ describe('real PostgreSQL, Redis, Fastify and worker integration', () => {
       expect((await sendWebhook(payload(commentId))).statusCode).toBe(500);
       const result = await context.database.pool.query(
         `SELECT count(*)::int AS total FROM webhook_events
-         WHERE payload->'entry'->0->'changes'->0->'value'->>'id' = $1`, [commentId]);
+         WHERE COALESCE(payload->'entry'->0->'changes'->0->'value'->>'comment_id', payload->'entry'->0->'changes'->0->'value'->>'id') = $1`, [commentId]);
       expect(result.rows[0].total).toBe(0);
       expect(await eventsFor(commentId)).toHaveLength(0);
     } finally {
@@ -306,7 +307,7 @@ describe('real PostgreSQL, Redis, Fastify and worker integration', () => {
 
   async function storedEvent(commentId: string) {
     const result = await context.database.pool.query(
-      `SELECT id FROM webhook_events WHERE payload->'entry'->0->'changes'->0->'value'->>'id' = $1`, [commentId]);
+      `SELECT id FROM webhook_events WHERE COALESCE(payload->'entry'->0->'changes'->0->'value'->>'comment_id', payload->'entry'->0->'changes'->0->'value'->>'id') = $1`, [commentId]);
     return result.rows[0].id as string;
   }
 
@@ -525,6 +526,55 @@ describe('real PostgreSQL, Redis, Fastify and worker integration', () => {
     } });
     expect(duplicateCompleted.statusCode).toBe(409);
     expect(duplicateCompleted.json().code).toBe('EMAIL_TAKEN');
+  });
+
+  it('creates, reuses, and links Google-authenticated users and workspaces', async () => {
+    const auth = new AuthService(context.database);
+    const googleSub = `google-${randomUUID()}`;
+    const email = `${randomUUID()}@example.test`;
+
+    const first = await auth.signInWithGoogle({ googleSub, email, displayName: 'Google User' });
+    expect(first.kind).toBe('session');
+    if (first.kind !== 'session') return;
+    expect(first.credentials.user).toMatchObject({ email, role: 'owner' });
+    expect(first.credentials.sessionToken).not.toBe(first.credentials.csrfToken);
+
+    const stored = await context.database.pool.query<{ google_sub: string; email_verified_at: Date | null }>(
+      'SELECT google_sub, email_verified_at FROM users WHERE id = $1', [first.credentials.user.id]);
+    expect(stored.rows[0]?.google_sub).toBe(googleSub);
+    expect(stored.rows[0]?.email_verified_at).toBeInstanceOf(Date);
+    const workspace = await context.database.pool.query<{ name: string }>(
+      'SELECT name FROM workspaces WHERE id = $1', [first.credentials.user.workspaceId]);
+    expect(workspace.rows[0]?.name).toBe("Google User's workspace");
+
+    const second = await auth.signInWithGoogle({ googleSub, email, displayName: 'Google User' });
+    expect(second.kind).toBe('session');
+    if (second.kind !== 'session') return;
+    expect(second.credentials.user.id).toBe(first.credentials.user.id);
+    expect(second.credentials.user.workspaceId).toBe(first.credentials.user.workspaceId);
+
+    const linkEmail = `${randomUUID()}@example.test`;
+    const existing = await auth.signup({
+      email: linkEmail,
+      password: 'integration-only-password',
+      workspaceName: 'Existing Google Link workspace'
+    });
+    const linked = await auth.signInWithGoogle({
+      googleSub: `google-${randomUUID()}`,
+      email: linkEmail,
+      displayName: 'Linked User'
+    });
+    expect(linked.kind).toBe('session');
+    if (linked.kind !== 'session') return;
+    expect(linked.credentials.user.id).toBe(existing.user.id);
+    expect(linked.credentials.user.workspaceId).toBe(existing.user.workspaceId);
+
+    const conflict = await auth.signInWithGoogle({
+      googleSub: `google-${randomUUID()}`,
+      email: linkEmail,
+      displayName: 'Conflicting User'
+    });
+    expect(conflict).toEqual({ kind: 'conflict' });
   });
 
   it('rechecks ownership at processing and trigger-write time after accepting a replay', async () => {

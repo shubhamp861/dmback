@@ -35,6 +35,10 @@ export interface SessionCredentials {
   };
 }
 
+export type GoogleSignInResult =
+  | { kind: 'session'; credentials: SessionCredentials }
+  | { kind: 'conflict' };
+
 export class AuthService {
   constructor(
     private readonly database: Database,
@@ -110,6 +114,96 @@ export class AuthService {
       workspaceId: row.workspace_id,
       role: row.role
     });
+  }
+
+  async signInWithGoogle(input: { googleSub: string; email: string; displayName?: string }): Promise<GoogleSignInResult> {
+    try {
+      return await this.signInWithGoogleTransaction(input);
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        return this.signInWithGoogleTransaction(input);
+      }
+      throw error;
+    }
+  }
+
+  private async signInWithGoogleTransaction(input: {
+    googleSub: string;
+    email: string;
+    displayName?: string;
+  }): Promise<GoogleSignInResult> {
+    const email = normalizeEmail(input.email);
+    const client = await this.database.pool.connect();
+
+    try {
+      await client.query('BEGIN');
+      let user = (await client.query<{ id: string; email: string }>(
+        `SELECT id, email FROM users WHERE google_sub = $1 FOR UPDATE`,
+        [input.googleSub]
+      )).rows[0];
+
+      if (!user) {
+        const linked = await client.query<{ id: string; email: string; google_linked: boolean }>(
+          `INSERT INTO users (email, google_sub, email_verified_at)
+           VALUES ($1, $2, now())
+           ON CONFLICT (email) DO UPDATE
+             SET google_sub = COALESCE(users.google_sub, EXCLUDED.google_sub),
+                 email_verified_at = COALESCE(users.email_verified_at, now())
+           RETURNING id, email, (google_sub = $2) AS google_linked`,
+          [email, input.googleSub]
+        );
+        const row = linked.rows[0];
+        if (!row) throw new Error('Google user was not created');
+        if (!row.google_linked) {
+          await client.query('ROLLBACK');
+          return { kind: 'conflict' };
+        }
+        user = { id: row.id, email: row.email };
+      }
+      if (!user) throw new Error('Google user was not resolved');
+
+      const membership = (await client.query<{ workspace_id: string; role: AuthContext['role'] }>(
+        `SELECT workspace_id, role
+         FROM memberships
+         WHERE user_id = $1
+         ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END
+         LIMIT 1`,
+        [user.id]
+      )).rows[0];
+
+      let workspaceId: string;
+      let role: AuthContext['role'];
+      if (membership) {
+        workspaceId = membership.workspace_id;
+        role = membership.role;
+      } else {
+        const workspace = (await client.query<{ id: string }>(
+          'INSERT INTO workspaces (name) VALUES ($1) RETURNING id',
+          [workspaceNameForGoogleUser(input.displayName, email)]
+        )).rows[0];
+        if (!workspace) throw new Error('Workspace was not created');
+        await client.query(
+          `INSERT INTO memberships (workspace_id, user_id, role) VALUES ($1, $2, 'owner')`,
+          [workspace.id, user.id]
+        );
+        workspaceId = workspace.id;
+        role = 'owner';
+      }
+
+      const credentials = await this.createSessionWithClient(client, {
+        userId: user.id,
+        email: user.email,
+        workspaceId,
+        role
+      });
+      await client.query('COMMIT');
+      return { kind: 'session', credentials };
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async requestSignupOtp(emailInput: string): Promise<void> {
@@ -336,4 +430,14 @@ export function hashToken(token: string): string {
 
 export function randomToken(): string {
   return randomBytes(32).toString('base64url');
+}
+
+function workspaceNameForGoogleUser(displayName: string | undefined, email: string): string {
+  const fallback = email.split('@')[0] ?? 'My';
+  const base = (displayName?.trim() || fallback).replace(/\s+/g, ' ').slice(0, 100).trim();
+  return `${base || 'My'}'s workspace`;
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === '23505';
 }

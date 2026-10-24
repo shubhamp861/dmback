@@ -2,24 +2,20 @@ import React, { useEffect, useState } from 'react';
 import { Sheet } from '../ui/Sheet';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
+import { GoogleSignInButton } from '../GoogleSignInButton';
 import { API_BASE_URL, AuthUser, formatApiError, InstagramAccount } from '../../lib/api';
 import {
   AlertCircle,
-  ArrowLeft,
   Building,
   CheckCircle2,
   Instagram,
   LogOut,
-  Mail,
   Shield,
-  User,
 } from 'lucide-react';
 
-const OTP_RESEND_COOLDOWN_SECONDS = 60;
-const OTP_MAX_ATTEMPTS = 5;
+const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim();
 
 type AuthMode = 'profile' | 'login' | 'signup' | 'reset';
-type SignupStep = 'email' | 'otp' | 'complete';
 
 export interface AuthModalProps {
   isOpen: boolean;
@@ -27,9 +23,7 @@ export interface AuthModalProps {
   currentUser: AuthUser | null;
   accounts: InstagramAccount[];
   onLogin: (email: string, password: string) => Promise<void>;
-  onSignupRequestOtp: (email: string) => Promise<void>;
-  onSignupVerifyOtp: (email: string, otp: string) => Promise<string>;
-  onSignupComplete: (verificationToken: string, password: string, workspaceName: string) => Promise<void>;
+  onGoogleSignIn: (credential: string) => Promise<void>;
   onLogout: () => Promise<void>;
   onRequestReset: (email: string) => Promise<void>;
 }
@@ -40,134 +34,48 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   currentUser,
   accounts,
   onLogin,
-  onSignupRequestOtp,
-  onSignupVerifyOtp,
-  onSignupComplete,
+  onGoogleSignIn,
   onLogout,
   onRequestReset,
 }) => {
   const [mode, setMode] = useState<AuthMode>('login');
-  const [signupStep, setSignupStep] = useState<SignupStep>('email');
   const [email, setEmail] = useState('');
-  const [otp, setOtp] = useState('');
-  const [verificationToken, setVerificationToken] = useState<string | null>(null);
   const [password, setPassword] = useState('');
-  const [workspaceName, setWorkspaceName] = useState('My Creator Studio');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
-  const [otpNotice, setOtpNotice] = useState<string | null>(null);
-  const [otpCooldown, setOtpCooldown] = useState(0);
-  const [otpAttempts, setOtpAttempts] = useState(0);
-  const [otpAttemptLimitReached, setOtpAttemptLimitReached] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
 
     setMode(currentUser ? 'profile' : 'login');
-    setSignupStep('email');
-    setOtp('');
-    setVerificationToken(null);
     setPassword('');
     setError(null);
     setResetMessage(null);
-    setOtpNotice(null);
-    setOtpCooldown(0);
-    setOtpAttempts(0);
-    setOtpAttemptLimitReached(false);
   }, [isOpen, currentUser]);
-
-  useEffect(() => {
-    if (otpCooldown <= 0) return;
-    const timer = window.setInterval(() => {
-      setOtpCooldown((remaining) => Math.max(remaining - 1, 0));
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [otpCooldown]);
 
   const switchMode = (nextMode: AuthMode) => {
     setMode(nextMode);
     setError(null);
     setResetMessage(null);
-    setOtpNotice(null);
-    if (nextMode === 'signup') {
-      setSignupStep('email');
-      setOtp('');
-      setVerificationToken(null);
-      setOtpAttempts(0);
-      setOtpAttemptLimitReached(false);
-      setOtpCooldown(0);
-    }
   };
 
-  const handleRequestOtp = async () => {
-    const normalizedEmail = email.trim().toLowerCase();
-    setEmail(normalizedEmail);
+  const handleGoogleCredential = async (credential: string) => {
     setError(null);
-    setOtpNotice(null);
     setLoading(true);
 
     try {
-      await onSignupRequestOtp(normalizedEmail);
-      setSignupStep('otp');
-      setOtp('');
-      setOtpCooldown(OTP_RESEND_COOLDOWN_SECONDS);
-      setOtpAttempts(0);
-      setOtpAttemptLimitReached(false);
-      setOtpNotice('If this email is eligible, a six-digit verification code was sent.');
+      await onGoogleSignIn(credential);
+      onClose();
     } catch (err: unknown) {
-      setError(formatApiError(err, 'We could not request a verification code.'));
+      setError(formatApiError(err, 'Google sign-in failed. Please try again.'));
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleVerifyOtp = async () => {
-    if (otpAttemptLimitReached) return;
-
-    setError(null);
-    setOtpNotice(null);
-    setLoading(true);
-
-    try {
-      const responseToken = await onSignupVerifyOtp(email.trim().toLowerCase(), otp.trim());
-      setVerificationToken(responseToken);
-      setSignupStep('complete');
-      setOtpAttempts(0);
-    } catch (err: unknown) {
-      const apiError = err as { code?: string };
-      const nextAttempts = otpAttempts + (apiError?.code === 'INVALID_SIGNUP_OTP' ? 1 : 0);
-      setOtpAttempts(nextAttempts);
-      if (apiError?.code === 'INVALID_SIGNUP_OTP' && nextAttempts >= OTP_MAX_ATTEMPTS) {
-        setOtpAttemptLimitReached(true);
-        setError('Too many incorrect attempts. Request a new verification code to continue.');
-      } else {
-        setError(formatApiError(err, 'The verification code could not be verified.'));
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleResendOtp = async () => {
-    if (otpCooldown > 0 || loading) return;
-    await handleRequestOtp();
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-
-    if (mode === 'signup') {
-      if (signupStep === 'email') {
-        await handleRequestOtp();
-        return;
-      }
-      if (signupStep === 'otp') {
-        await handleVerifyOtp();
-        return;
-      }
-    }
-
     setError(null);
     setLoading(true);
 
@@ -175,25 +83,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       if (mode === 'login') {
         await onLogin(email.trim(), password);
         onClose();
-      } else if (mode === 'signup' && signupStep === 'complete') {
-        if (!verificationToken) {
-          setError('Your verification expired. Request a new code to continue.');
-          setSignupStep('email');
-          return;
-        }
-        await onSignupComplete(verificationToken, password, workspaceName);
-        onClose();
       } else if (mode === 'reset') {
         await onRequestReset(email.trim());
         setResetMessage('If an account exists for this email, reset instructions have been recorded.');
       }
     } catch (err: unknown) {
-      const apiError = err as { code?: string };
       setError(formatApiError(err));
-      if (mode === 'signup' && apiError?.code === 'INVALID_VERIFICATION_TOKEN') {
-        setVerificationToken(null);
-        setSignupStep('email');
-      }
     } finally {
       setLoading(false);
     }
@@ -211,22 +106,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     : mode === 'login'
     ? 'Log In to LinktoDM'
     : mode === 'signup'
-    ? signupStep === 'email'
-      ? 'Create Your Workspace'
-      : signupStep === 'otp'
-      ? 'Verify Your Email'
-      : 'Finish Your Workspace'
+    ? 'Create Your Workspace'
     : 'Reset Password';
 
   const description = currentUser
     ? 'Your email session is active. Instagram is connected separately to this workspace.'
     : mode === 'signup'
-    ? signupStep === 'email'
-      ? 'Start with your email address. We will send a one-time verification code.'
-      : signupStep === 'otp'
-      ? `Enter the six-digit code sent to ${email}.`
-      : 'Choose a password and name your new workspace.'
+    ? 'Continue with Google to create your account and workspace. No password or email code is required.'
     : 'Email authentication via secure cookie sessions (/v1/auth).';
+
+  const errorBanner = error ? (
+    <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-start gap-2">
+      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+      <span>{error}</span>
+    </div>
+  ) : null;
 
   return (
     <Sheet
@@ -342,14 +236,49 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </Button>
           </div>
         </div>
-      ) : (
-        <form onSubmit={handleSubmit} className="space-y-4">
-          {error && (
-            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-700 flex items-start gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{error}</span>
+      ) : mode === 'signup' ? (
+        <div className="space-y-5">
+          {errorBanner}
+
+          {GOOGLE_CLIENT_ID ? (
+            <div className="space-y-3">
+              {loading ? (
+                <p className="py-3 text-center text-xs text-slate-500">Signing in with Google...</p>
+              ) : (
+                <GoogleSignInButton
+                  clientId={GOOGLE_CLIENT_ID}
+                  text="signup_with"
+                  onCredential={handleGoogleCredential}
+                  onError={setError}
+                />
+              )}
+              <p className="text-center text-xs text-slate-500">
+                A workspace is created automatically. You can connect Instagram after signing in.
+              </p>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+              Google sign-in is not configured. Add <code className="font-mono">VITE_GOOGLE_CLIENT_ID</code> to{' '}
+              <code className="font-mono">react-code/.env</code> and restart the frontend.
             </div>
           )}
+
+          <div className="pt-2 text-center text-xs text-slate-500">
+            <p>
+              Already have an account?{' '}
+              <button
+                type="button"
+                onClick={() => switchMode('login')}
+                className="text-indigo-600 font-semibold hover:underline cursor-pointer"
+              >
+                Sign in
+              </button>
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {errorBanner}
 
           {resetMessage && (
             <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-emerald-800 flex items-center gap-2">
@@ -358,14 +287,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
           )}
 
-          {otpNotice && mode === 'signup' && signupStep === 'otp' && (
-            <div className="p-3 rounded-xl bg-sky-50 border border-sky-200 text-xs text-sky-800 flex items-start gap-2">
-              <Mail className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>{otpNotice}</span>
+          {mode === 'login' && GOOGLE_CLIENT_ID && !loading && (
+            <div className="space-y-3">
+              <GoogleSignInButton
+                clientId={GOOGLE_CLIENT_ID}
+                text="signin_with"
+                onCredential={handleGoogleCredential}
+                onError={setError}
+              />
+              <div className="relative text-center">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t border-slate-200" />
+                </div>
+                <span className="relative bg-white px-2 text-[11px] font-medium uppercase tracking-wider text-slate-400">
+                  or use email
+                </span>
+              </div>
             </div>
           )}
 
-          {mode !== 'signup' || signupStep === 'email' || signupStep === 'otp' ? (
+          <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label className="block text-xs font-medium text-slate-700 mb-1">Email Address</label>
               <Input
@@ -374,143 +315,69 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="you@example.com"
                 autoComplete="email"
-                disabled={mode === 'signup' && signupStep === 'otp'}
                 required
               />
             </div>
-          ) : null}
 
-          {mode === 'signup' && signupStep === 'otp' && (
-            <div>
-              <label className="block text-xs font-medium text-slate-700 mb-1">Verification Code</label>
-              <Input
-                value={otp}
-                onChange={(e) => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                placeholder="123456"
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                maxLength={6}
-                required
-              />
-              <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
-                <span>{otpAttempts > 0 ? `${otpAttempts}/${OTP_MAX_ATTEMPTS} attempts used` : 'Code expires in 10 minutes'}</span>
-                <button
-                  type="button"
-                  onClick={handleResendOtp}
-                  disabled={otpCooldown > 0 || loading}
-                  className="text-indigo-600 hover:text-indigo-700 disabled:text-slate-400 disabled:cursor-not-allowed font-medium cursor-pointer"
-                >
-                  {otpCooldown > 0 ? `Resend in ${otpCooldown}s` : 'Resend code'}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {mode === 'signup' && signupStep === 'complete' && (
-            <>
+            {mode === 'login' && (
               <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">Password (min 12 characters)</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-medium text-slate-700">Password</label>
+                  <button
+                    type="button"
+                    onClick={() => switchMode('reset')}
+                    className="text-xs text-indigo-600 hover:underline cursor-pointer"
+                  >
+                    Forgot?
+                  </button>
+                </div>
                 <Input
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="••••••••••••"
-                  autoComplete="new-password"
-                  minLength={12}
+                  autoComplete="current-password"
                   required
                 />
               </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-700 mb-1">Workspace Name</label>
-                <Input
-                  value={workspaceName}
-                  onChange={(e) => setWorkspaceName(e.target.value)}
-                  placeholder="My Brand Studio"
-                  maxLength={120}
-                  required
-                />
-              </div>
-            </>
-          )}
+            )}
 
-          {mode !== 'reset' && mode !== 'signup' && (
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="block text-xs font-medium text-slate-700">Password</label>
-                <button
-                  type="button"
-                  onClick={() => switchMode('reset')}
-                  className="text-xs text-indigo-600 hover:underline cursor-pointer"
-                >
-                  Forgot?
-                </button>
-              </div>
-              <Input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••••••"
-                autoComplete="current-password"
-                required
-              />
-            </div>
-          )}
-
-          <Button type="submit" variant="brand" className="w-full mt-2" disabled={loading || otpAttemptLimitReached}>
-            {loading
-              ? 'Processing...'
-              : mode === 'login'
-              ? 'Sign In to Workspace'
-              : mode === 'signup' && signupStep === 'email'
-              ? 'Send Verification Code'
-              : mode === 'signup' && signupStep === 'otp'
-              ? 'Verify Email'
-              : mode === 'signup'
-              ? 'Create Account & Workspace'
-              : 'Send Reset Instructions'}
-          </Button>
-
-          {mode === 'signup' && signupStep !== 'email' && (
-            <button
-              type="button"
-              onClick={() => {
-                setSignupStep(signupStep === 'complete' ? 'otp' : 'email');
-                setError(null);
-              }}
-              className="w-full text-center text-xs text-slate-500 hover:text-indigo-700 font-medium py-1 transition-colors cursor-pointer flex items-center justify-center gap-1"
-            >
-              <ArrowLeft className="w-3 h-3" />
-              {signupStep === 'complete' ? 'Back to verification code' : 'Use a different email'}
-            </button>
-          )}
+            <Button type="submit" variant="brand" className="w-full mt-2" disabled={loading}>
+              {loading
+                ? 'Processing...'
+                : mode === 'login'
+                ? 'Sign In to Workspace'
+                : 'Send Reset Instructions'}
+            </Button>
+          </form>
 
           <div className="pt-2 text-center text-xs text-slate-500">
             {mode === 'login' && (
               <p>
                 Don't have a workspace?{' '}
-                <button type="button" onClick={() => switchMode('signup')} className="text-indigo-600 font-semibold hover:underline cursor-pointer">
+                <button
+                  type="button"
+                  onClick={() => switchMode('signup')}
+                  className="text-indigo-600 font-semibold hover:underline cursor-pointer"
+                >
                   Create workspace
-                </button>
-              </p>
-            )}
-            {mode === 'signup' && (
-              <p>
-                Already have an account?{' '}
-                <button type="button" onClick={() => switchMode('login')} className="text-indigo-600 font-semibold hover:underline cursor-pointer">
-                  Sign in
                 </button>
               </p>
             )}
             {mode === 'reset' && (
               <p>
                 Remembered your password?{' '}
-                <button type="button" onClick={() => switchMode('login')} className="text-indigo-600 font-semibold hover:underline cursor-pointer">
+                <button
+                  type="button"
+                  onClick={() => switchMode('login')}
+                  className="text-indigo-600 font-semibold hover:underline cursor-pointer"
+                >
                   Back to Sign In
                 </button>
               </p>
             )}
           </div>
-        </form>
+        </div>
       )}
     </Sheet>
   );

@@ -51,11 +51,14 @@
 - Frontend API calls use cookie sessions with `credentials: 'include'`; never store the HttpOnly `session` cookie in browser storage, and send the readable `csrf_token` cookie as `x-csrf-token` for mutations.
 - Keep `react-code/src/lib/api.ts` aligned with `node_code/share/API-AUTH-MAPPING.md`; the mapping documents implemented API behavior, not future product screens.
 
-## Email signup authentication
+## Sign-up authentication
 
-- Registration is a three-step backend flow: `POST /v1/auth/signup/request-otp`, `POST /v1/auth/signup/verify-otp`, then `POST /v1/auth/signup/complete`.
+- The frontend sign-up path is Google-only: the browser renders the Google Identity Services button and sends the returned ID token to `POST /v1/auth/google`. The backend verifies the token against Google's JWKS, then creates or reuses the user, workspace, and cookie session.
+- Google sign-in needs the same OAuth **Web application** client ID in `node_code/.env` (`GOOGLE_CLIENT_ID`) and `react-code/.env` (`VITE_GOOGLE_CLIENT_ID`). Add the frontend origin (`http://localhost:3001`) to the client's authorized JavaScript origins. This flow uses no client secret and no redirect URI.
+- A first Google sign-in creates a user with `google_sub`, marks the email verified, and creates an owner workspace named after the Google display name. Repeat sign-ins reuse the user and highest-priority membership. A verified email already linked to a different Google account returns `409 GOOGLE_ACCOUNT_CONFLICT`.
+- Email/password login remains available for seeded and existing accounts. The legacy OTP endpoints (`POST /v1/auth/signup/request-otp`, `verify-otp`, `complete`) remain implemented for API compatibility but are no longer used by the frontend.
 - OTPs are hashed, six digits, valid for 10 minutes, limited to 5 attempts, and resend-cooldown protected; do not log or return raw OTPs or verification tokens except through their defined response.
-- Migration `005_email_verification.sql` adds email verification state; add later migrations rather than editing applied migration files.
+- Migrations `005_email_verification.sql` and `006_google_auth.sql` add email-verification and Google identity state; add later migrations rather than editing applied migration files.
 - The current email provider is `FakeEmailProvider` for development/tests and does not deliver real email; do not claim email delivery works until a provider is implemented and configured.
 - Preserve the existing password login/session flow while changing signup; email authentication and Instagram OAuth are separate concerns.
 
