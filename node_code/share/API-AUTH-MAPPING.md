@@ -1218,7 +1218,7 @@ rather than a frontend-visible validation error.
 
 ## 9. Seed data for frontend development
 
-Run from `/home/shubham/dmlinl/backend`:
+Run from `C:\Drive-D\dmlinkProject\node_code`:
 
 ```bash
 npm run db:migrate
@@ -1498,17 +1498,17 @@ Connect button -> browser navigation to /v1/auth/instagram/start
 Start the backend API and worker first. Then use the seeded account and user to
 verify the frontend integration:
 
-```bash
-cd /home/shubham/dmlinl/backend
+```powershell
+Set-Location C:\Drive-D\dmlinkProject\node_code
 npm run db:migrate
 npm run db:seed
-npm run dev:all
+npm run dev
 ```
 
 In a second terminal:
 
-```bash
-cd /home/shubham/dmlinl/backend
+```powershell
+Set-Location C:\Drive-D\dmlinkProject\node_code
 npm run dev:worker
 ```
 
@@ -1590,7 +1590,7 @@ product owner:
 | Webhook payload parsing | `backend/src/instagram/webhook.ts` |
 | HMAC signature rules | `backend/src/instagram/signature.ts` |
 | Seed IDs/data | `backend/scripts/seed.ts` |
-| Runtime setup | `backend/README.md` and `backend/INSTALL_PREREQUISITES.md` |
+| Runtime setup | `node_code/README.md` and `node_code/INSTALL_PREREQUISITES.md` |
 | Detailed future backlog | `backend/devResource/BACKEND-PENDING-TASKS.md` |
 
 When this document and source code disagree, treat the source and live tests as

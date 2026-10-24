@@ -6,4 +6,3 @@ dist/
 !.env.production.example
 coverage/
 *.log
-.docker-data/

@@ -77,7 +77,7 @@ timeouts remain unchanged. No dependency installations or Linux services used.
 
 Remaining replay work: live Windows integration verification, time-range/bulk
 operations, rate limits, audit/status UI/API and future retention handling.
-See `backend/README.md` and `share/API-AUTH-MAPPING.md` for the endpoint contract.
+See `node_code/README.md` and `share/API-AUTH-MAPPING.md` for the endpoint contract.
 
 ### Configuration/security follow-up
 
@@ -99,19 +99,23 @@ review remain open. Do not rotate existing local keys without a migration plan.
 
 ### Integration infrastructure follow-up
 
-Added `backend/docker-compose.test.yml`, `vitest.integration.config.ts`, and
+Added `vitest.integration.config.ts` and
 `tests/integration/` with a dedicated `npm run test:integration` command. The
 test targets never fall back to developer connection settings: dedicated test
-database name ending `_test`, Redis DB `/15`, random schema/queue prefix, and
-separate local ports 15432/56379 by default. Worker processing was extracted to
+database name ending `_test`, Redis DB `/15`, random schema/queue prefix. Worker processing was extracted to
 `backend/src/processing.ts` and is used by both the worker and tests.
-CI now has PostgreSQL/Redis service containers for integration tests.
 
-Latest checks: typecheck/build and 206 unit/HTTP-double tests passed. Integration
-setup previously failed with `ECONNREFUSED 127.0.0.1:55432`; Docker/test services are not
-available to the automation runtime. No live integration/CI pass is claimed.
-Windows next step: `npm run test:infra:up`, `npm run test:integration`, then
-`npm run test:infra:down` from the backend directory. No Linux services installed.
+> **2026-10-24 update:** the repository is container-free. PostgreSQL and
+> Redis/Memurai run as native services. The integration suite runs against a
+> dedicated `*_test` database on the native server plus Redis `/15`, derived
+> automatically by `npm run test:integration:windows`; the 16-case suite passes
+> locally. Start the backend manually from `node_code/` with `npm run dev` and
+> `npm run dev:worker`, and the frontend from `react-code/` with `npm run dev`.
+
+Latest checks: typecheck/build and 328 unit/HTTP-double tests passed. The
+real-service integration suite passed locally (16 tests). CI runs typecheck,
+unit tests, and build only; the integration suite is a local check.
+Windows command: `npm run test:integration:windows` from `node_code/`.
 
 This section supersedes older statements below about health checks and role
 enforcement. Windows remains the target development environment. No Linux
@@ -127,30 +131,30 @@ database or Redis services were installed or started for this update.
 - Checks passed: `npm run typecheck`, `npm run build`, and 193 tests across
   12 files. Tests ran in the automation container with Linux-only build-tool
   binaries from `/tmp/dmlink-runtime-test` and `--maxWorkers=2`; this is not
-  evidence that live Windows Docker outage/restart behavior passed.
+  evidence that live native-service outage/restart behavior passed.
 - Still pending: real PostgreSQL/Redis integration tests and CI services,
   concurrent webhook/recovery and signal tests, authorized replay, audit and
   membership management, production secret hardening/KMS, and API controls.
   No claim is made that all P0 work is complete.
 
-Relevant code: `backend/src/health.ts`, `runtime.ts`, `authorization.ts`,
+Relevant code: `node_code/src/health.ts`, `runtime.ts`, `authorization.ts`,
 `app.ts`, `server.ts`, `worker.ts`, `queue.ts`, `db.ts`, and `routes.ts`.
 
 > **Purpose:** This is the single orientation document for future AI sessions.
-> Read it before changing anything in `/home/shubham/dmlinl`.
+> Read it before changing anything in `C:\Drive-D\dmlinkProject`.
 >
-> **Last reviewed:** 2026-10-17
-> **Current product state:** Backend foundation is implemented; frontend and most
-> production Instagram automation capabilities are not implemented yet.
+> **Last reviewed:** 2026-10-24
+> **Current product state:** Backend foundation and a React frontend shell are
+> implemented; real Instagram sending and most production capabilities are not.
 
 ## How to use this document in a new session
 
 Start a new session by pointing the AI to:
 
 ```text
-Read /home/shubham/dmlinl/PROJECT_CONTEXT.md first. Treat it as the project
-orientation document, then inspect the exact source files and git status before
-editing. Do not read or expose .env secrets.
+Read C:\Drive-D\dmlinkProject\node_code\PROJECT_CONTEXT.md first. Treat it as the
+project orientation document, then inspect the exact source files and git status
+before editing. Do not read or expose .env secrets.
 ```
 
 This file is a map and a current-state summary. The source code is authoritative
@@ -179,54 +183,48 @@ It currently records a matching result; it does **not** send real replies or DMs
 The project is located at:
 
 ```text
-/home/shubham/dmlinl
+C:\Drive-D\dmlinkProject
 ```
 
 Directory map:
 
 ```text
-dmlinl/
-├── PROJECT_CONTEXT.md          # This document; read first in future sessions
-├── share/                      # Documents shared with frontend/other teams
-│   └── API-AUTH-MAPPING.md     # Current frontend API and auth contract
-├── backend/                    # Active backend application and separate Git repo
+dmlinkProject/
+├── AGENTS.md                   # Working rules for agents/humans
+├── node_code/                  # Active backend application
 │   ├── src/                    # TypeScript application code
-│   ├── scripts/                # Migrations, seed, smoke, and onboarding scripts
+│   ├── scripts/                # Migrations, seed, smoke, and Windows scripts
 │   ├── migrations/             # PostgreSQL SQL migrations
 │   ├── tests/                  # Vitest tests
-│   ├── devResource/            # Specification, backlog, and Meta contract notes
+│   ├── devResource/            # Specification, backlog, and Meta notes
+│   ├── share/                  # API/auth contract shared with frontend
 │   ├── package.json            # Commands and dependencies
 │   ├── package-lock.json       # Locked npm dependency graph
-│   ├── docker-compose.yml      # Local PostgreSQL and Redis containers
-│   ├── .env.example            # Safe configuration template; no real secrets
-│   ├── README.md               # Backend usage and API examples
-│   └── INSTALL_PREREQUISITES.md# Manual/native setup guide
-└── frontend/                   # Not implemented yet; currently only devResource/
+│   ├── .env.example            # Safe configuration template
+│   ├── PROJECT_CONTEXT.md      # This document
+│   ├── README.md               # Setup, API usage, and test commands
+│   └── INSTALL_PREREQUISITES.md
+├── react-code/                 # Vite + React 19 frontend
+└── scripts/                    # Root Windows full-stack launcher
 ```
 
-### Git repositories
+### Git repository
 
-There are two nested Git boundaries. Always check the correct one before work:
+This checkout is one Git repository at `C:\Drive-D\dmlinkProject`.
 
-- `/home/shubham/dmlinl/.git`
-  - Branch: `master`
-  - No commits yet and no remote configured at the last review.
-  - The backend directory currently appears as an untracked directory here.
-- `/home/shubham/dmlinl/backend/.git`
-  - Branch: `main`, tracking `origin/main`.
-  - Latest known commit: `b098dd7 first commit`.
-  - At the last review, `README.md` was modified and most current backend files
-    were untracked relative to this nested repository.
-
-Do not commit, push, reset, or reorganize either repository unless the user asks.
-Preserve unrelated working-tree changes. Use the backend repository as the
-application root for backend development commands.
+- Branch: `main`.
+- The backend application lives in `node_code/`; the frontend lives in
+  `react-code/`.
+- Do not commit, push, reset, or reorganize the repository unless the user asks.
+  Preserve unrelated working-tree changes.
 
 ### Frontend status
 
-`/home/shubham/dmlinl/frontend` currently has no package manifest, source code,
-lockfile, framework, or build configuration. Do not assume a frontend stack has
-already been selected. The backend API is the only implemented application.
+`react-code/` is a Vite + React 19 + TypeScript frontend with dashboard,
+automation, trigger-event, and public bio-link screens. Some views still use mock
+data and are being wired to the backend API incrementally. Run frontend commands
+from `react-code/` with `npm ci`, `npm run dev`, `npm run lint`, and
+`npm run build`.
 
 ## 3. Current implementation status
 
@@ -253,9 +251,10 @@ already been selected. The backend API is the only implemented application.
 - Native Ubuntu/Debian/WSL onboarding installer at
   `backend/scripts/bootstrap.sh`.
 - Windows PowerShell onboarding installer at
-  `backend/scripts/bootstrap-windows.ps1`, using winget and Docker Desktop.
+  `backend/scripts/bootstrap-windows.ps1`, using winget plus the native
+  PostgreSQL/Redis services.
 - One-command local startup script at `backend/scripts/start-dev.sh` for native
-  or Docker PostgreSQL/Redis, migrations, seed data, and the API.
+  PostgreSQL/Redis, migrations, seed data, and the API.
 - Unit tests, typecheck, production TypeScript build, and GitHub Actions CI.
 
 ### Important incomplete behavior
@@ -283,8 +282,8 @@ already been selected. The backend API is the only implemented application.
 
 - Node.js `>=20`; local development has used Node 22.
 - npm with the checked-in `package-lock.json`.
-- PostgreSQL 15+ for development; Docker Compose uses PostgreSQL 16.
-- Redis 7+; Docker Compose uses Redis 7.
+- PostgreSQL 15+ for development; this machine runs PostgreSQL 16.
+- Redis 7+ (or Memurai) for development.
 - Python 3, pip, and venv are installed by the onboarding script for machine
   prerequisites/supporting tooling, although the backend itself is TypeScript.
 
@@ -312,12 +311,12 @@ From `backend/package.json`:
    - Polls the webhook outbox for dispatch recovery.
 
 PostgreSQL is the source of truth. Redis is used for asynchronous queueing and
-BullMQ job coordination. Docker Compose supplies only PostgreSQL and Redis; it
-does not run the API or worker.
+BullMQ job coordination. Both run as native services; nothing is containerized,
+and neither runs the API or worker.
 
 ## 5. Backend file guide
 
-All paths below are relative to `/home/shubham/dmlinl/backend` unless noted.
+All paths below are relative to `C:\Drive-D\dmlinkProject\node_code` unless noted.
 
 ### Application entry and wiring
 
@@ -556,11 +555,9 @@ requires KMS-backed envelope encryption, key versions/rotation, and access audit
 - `backend/.env.example` — variable names and placeholder development values.
 - `backend/.env` — local ignored configuration; never copy its contents into
   documentation or commits.
-- `backend/docker-compose.yml` — PostgreSQL 16 and Redis 7 with persistent
-  named volumes and health checks, exposed on ports 5432 and 6379.
 - `backend/tsconfig.json` — strict ES2022/NodeNext TypeScript build settings.
 - `backend/.github/workflows/ci.yml` — Node 20 CI running `npm ci`, typecheck,
-  tests, and build; it does not currently provision PostgreSQL/Redis integration
+  unit tests, and build; it does not provision PostgreSQL/Redis integration
   services.
 
 ### Onboarding and local scripts
@@ -575,17 +572,15 @@ requires KMS-backed envelope encryption, key versions/rotation, and access audit
   - If an existing local role has a mismatched password, use the explicit
     `RESET_DB_PASSWORD=1` override; it is intentionally not automatic.
 - `scripts/start-dev.sh`
-  - Starts native services by default, or Docker services with
-    `INFRA_MODE=docker`.
-  - Checks PostgreSQL and Redis, optionally runs migrations/seed data, then keeps
-    the API in the foreground.
+  - Starts and checks the native services, optionally runs migrations/seed data,
+    then keeps the API in the foreground.
   - Does not start the worker; run `npm run dev:worker` separately.
 - `scripts/bootstrap-windows.ps1`
   - Windows PowerShell onboarding path.
-  - Uses `winget` to install/verify Git, Python, Node.js LTS/npm, and Docker
-    Desktop, then starts Docker Compose PostgreSQL/Redis, migrates, seeds, and
+  - Uses `winget` to install/verify Git, Python, Node.js LTS/npm, then waits for
+    the native PostgreSQL/Redis services, migrates, seeds, and
     runs project checks.
-  - Preserves an existing `.env` and requires Docker Desktop's Linux engine.
+  - Preserves an existing `.env`.
 - `scripts/migrate.ts` — applies pending migrations.
 - `scripts/migration-status.ts` — reports applied/pending/modified/missing state.
 - `scripts/migration-utils.ts` — migration discovery, checksum, and status logic.
@@ -596,55 +591,43 @@ requires KMS-backed envelope encryption, key versions/rotation, and access audit
 
 Run backend commands from:
 
-```bash
-cd /home/shubham/dmlinl/backend
+```powershell
+Set-Location C:\Drive-D\dmlinkProject\node_code
 ```
 
-### Recommended native onboarding
+### Manual native setup (Windows)
 
-On Ubuntu, Debian, or Ubuntu/Debian WSL:
+PostgreSQL and Redis/Memurai must already be installed and running as native
+Windows services. Create the development role/database once (see `README.md`),
+then:
 
-```bash
-./scripts/bootstrap.sh
-```
-
-The installer uses native services and is intended for a normal user with sudo.
-It is not a production deployment tool and does not install Docker.
-
-After onboarding, start native PostgreSQL, Redis, migrations, seed data, and the
-API together:
-
-```bash
-npm run dev:all
-```
-
-Use Docker infrastructure instead with:
-
-```bash
-INFRA_MODE=docker npm run dev:all
-```
-
-### Manual Docker setup
-
-```bash
-cp .env.example .env
+```powershell
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 npm ci
 npm run db:migrate
 npm run db:migrate:status
 npm run db:seed
 ```
 
-Docker Compose starts PostgreSQL and Redis only. Start the application separately:
+Start the API and worker in separate terminals:
 
-```bash
+```powershell
 npm run dev
 ```
 
-In another terminal:
-
-```bash
+```powershell
 npm run dev:worker
 ```
+
+The frontend runs from `react-code/`:
+
+```powershell
+Set-Location C:\Drive-D\dmlinkProject\react-code
+npm ci
+npm run dev
+```
+
+See `README.md` for the PostgreSQL role/database commands and endpoint checks.
 
 ### Development smoke flow
 
@@ -665,7 +648,7 @@ The smoke event should produce a queued trigger event; it does not send a real
 Instagram DM.
 
 For authenticated API calls, login first and preserve the session/CSRF cookies as
-shown in `backend/README.md`. Automation mutation requests need both the session
+shown in `node_code/README.md`. Automation mutation requests need both the session
 cookie and the CSRF header.
 
 ### Compiled execution
@@ -718,7 +701,7 @@ All commands are defined in `backend/package.json`:
 
 ### Latest checks from the current work session
 
-Run from `/home/shubham/dmlinl/backend`:
+Run from `C:\Drive-D\dmlinkProject\node_code`:
 
 - `npm ci` — **passed**; npm reported 3 audit vulnerabilities (1 moderate,
   2 critical) that have not been resolved.
@@ -856,7 +839,7 @@ appropriate project document and keep Meta assumptions explicitly provisional.
 - `BACKEND-PENDING-TASKS.md` also contains historical “immediate next tasks”; use
   its completed-foundation section and current source together rather than blindly
   repeating old status text.
-- `backend/README.md` has authenticated mutation examples that are useful but do
+- `node_code/README.md` has authenticated mutation examples that are useful but do
   not show every session/CSRF cookie header required by the current routes.
 - `META-INTEGRATION-CONTRACT.md` is intentionally provisional and must be checked
   against current Meta documentation before real credentials are enabled.
@@ -866,9 +849,9 @@ update the relevant documentation as part of the feature or bug fix.
 
 ## 17. Safe working rules for future AI sessions
 
-1. Read this file, then run `git status --short --branch` in both the root and
-   backend repositories before editing.
-2. Work in `/home/shubham/dmlinl/backend` for backend changes. Do not create a
+1. Read this file, then run `git status --short --branch` in the repository root
+   before editing.
+2. Work in `C:\Drive-D\dmlinkProject\node_code` for backend changes. Do not create a
    second backend or a new starter project.
 3. Preserve the existing Node/TypeScript/Fastify/PostgreSQL/Redis/BullMQ stack.
 4. Do not read, print, commit, or copy `.env`, tokens, passwords, private logs,
@@ -888,21 +871,20 @@ update the relevant documentation as part of the feature or bug fix.
 ## 18. Suggested first prompt for the next session
 
 ```text
-Read /home/shubham/dmlinl/PROJECT_CONTEXT.md first. Inspect git status in both
-/home/shubham/dmlinl and /home/shubham/dmlinl/backend. Then inspect the exact
-source files for the requested task. Preserve unrelated changes and never read
-or expose .env contents. The current task is: <describe the task here>.
+Read C:\Drive-D\dmlinkProject\node_code\PROJECT_CONTEXT.md first. Inspect git
+status in the repository root. Then inspect the exact source files for the
+requested task. Preserve unrelated changes and never read or expose .env
+contents. The current task is: <describe the task here>.
 ```
 
 For the next backend reliability session, the most concrete starting action is:
 
-```bash
-cd /home/shubham/dmlinl/backend
+```powershell
+Set-Location C:\Drive-D\dmlinkProject\node_code
 git status --short --branch
-RESET_DB_PASSWORD=1 ./scripts/bootstrap.sh
+npm run db:migrate
+npm run db:seed
 ```
 
-Only use `RESET_DB_PASSWORD=1` when the existing local `instagram` role is the
-project's development role and its password must be synchronized. Then run the
-database migration/seed, start API and worker in separate terminals, send
-`npm run webhook:smoke`, and inspect the seeded automation events endpoint.
+Start the API and worker in separate terminals, send `npm run webhook:smoke`, and
+inspect the seeded automation events endpoint.

@@ -1,8 +1,8 @@
 # Backend Scripts Guide
 
 This folder contains the project setup, startup, database, smoke-test, and
-integration-verification scripts. The project target is **Windows with Docker
-Desktop**. Run Windows PowerShell scripts from the `node_code` directory unless
+integration-verification scripts. The project target is **Windows with native
+PostgreSQL and Memurai/Redis services**. Run Windows PowerShell scripts from the `node_code` directory unless
 the command below says otherwise.
 
 ## Quick command reference
@@ -24,8 +24,8 @@ the command below says otherwise.
 ### `bootstrap-windows.ps1`
 
 First-time Windows prerequisite and project setup. It checks or installs the
-required local tooling, prepares the project environment, starts the required
-Docker Desktop development services, installs dependencies when needed, applies
+required local tooling, prepares the project environment, waits for the native
+PostgreSQL and Redis/Memurai services, installs dependencies when needed, applies
 migrations, and reports the resulting status. It preserves an existing `.env`.
 
 Use it when setting up the project on a new Windows machine:
@@ -36,8 +36,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/bootstrap-windows.ps
 
 ### `start-dev-windows.ps1`
 
-Starts the normal Windows development stack using Docker Desktop, including
-PostgreSQL and Redis, then starts the API and worker. It also performs the
+Starts the normal Windows development stack against the native PostgreSQL and
+Redis/Memurai services, then starts the API. It also performs the
 normal development database setup unless `-SkipDbSetup` is supplied.
 
 ```cmd
@@ -59,12 +59,12 @@ npm run dev:p0:windows -- -SkipDbSetup
 
 ### `test-integration-windows.ps1`
 
-Runs the complete disposable Windows integration verification flow:
+Runs the complete Windows integration verification flow:
 
-1. Removes leftover integration containers.
-2. Starts the separate PostgreSQL and Redis test containers.
+1. Derives the dedicated `*_test` database URL from `DATABASE_URL` in `.env`
+   (or uses an explicit `TEST_DATABASE_URL`) and the Redis `/15` URL.
+2. Waits for the native PostgreSQL and Redis services on their local ports.
 3. Runs the real PostgreSQL/Redis/Fastify/BullMQ integration suite.
-4. Stops the test containers, including when the test suite fails.
 
 Recommended command:
 
@@ -72,20 +72,13 @@ Recommended command:
 npm run test:integration:windows
 ```
 
-The default disposable PostgreSQL host port is `15432`; Redis uses `56379`.
-If Windows reserves the PostgreSQL port, select another port and pass it to the
-script:
-
-```cmd
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-integration-windows.ps1 -PostgresPort 15433
-```
-
-The script sets `TEST_POSTGRES_PORT` for the child commands so Docker Compose
-and the integration test connection use the same port.
+No credentials are written to the repository: the suite connects with the same
+connection string already present in `.env`, only the database name is swapped
+to the dedicated `*_test` database.
 
 ### `validate-native-windows.ps1`
 
-Validates the Docker-free native Windows setup. It checks `pg_isready`, `psql`,
+Validates the native Windows setup. It checks `pg_isready`, `psql`,
 Memurai/Redis `PING`, Redis read/write, logical database `/15`, Lua support,
 PostgreSQL `pgcrypto`, and the ability to create/drop a temporary schema. It
 then applies/checks development migrations and runs typecheck, build, unit
@@ -154,7 +147,7 @@ do not use seeded credentials in staging or production.
 
 Sends a signed sample Instagram comment webhook to the locally running API. It
 uses `META_APP_SECRET` and `PORT` from `.env` and is intended for local smoke
-testing after the API, worker, migrations, seed data, and Docker services are
+testing after the API, worker, migrations, seed data, and native services are
 running.
 
 ```cmd
@@ -170,7 +163,7 @@ Instagram message.
 
 Legacy/native Ubuntu or WSL bootstrap script. It installs and configures native
 Linux prerequisites and is **not part of the Windows-only development flow**.
-Do not run it for the Windows Docker setup.
+Do not run it for the Windows setup.
 
 ### `start-dev.sh`
 
@@ -182,7 +175,8 @@ Linux infrastructure, performs database setup, and starts the backend. Use
 
 - Do not run database migration or seed commands without checking `DATABASE_URL`.
 - Do not use the integration database for development data.
-- Integration containers use disposable storage and separate ports from the
-  development Compose stack.
+- The integration suite uses a dedicated database ending in `_test` and Redis
+  logical database `/15`; it never touches the development database or Redis
+  development keys.
 - Do not commit `.env`, credentials, API keys, or generated local data.
 - Do not install Linux services or WSL dependencies for the Windows workflow.

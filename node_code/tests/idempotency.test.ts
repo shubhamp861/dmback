@@ -78,4 +78,23 @@ describe('idempotency database contract', () => {
     await new IdempotencyStore(pool).abandonIdempotency('id-1');
     expect(String(mocks.query.mock.calls[1]?.[0])).toContain("status = 'in_progress'");
   });
+
+  it('deletes expired completed and stale in-progress records with both retention bounds', async () => {
+    const pool = { query: mocks.query, connect: async () => client() };
+    mocks.query.mockResolvedValueOnce({ rowCount: 3, rows: [] });
+    await expect(
+      new IdempotencyStore(pool).cleanupIdempotencyKeys({ retentionHours: 24, staleInProgressMinutes: 60 })
+    ).resolves.toBe(3);
+
+    const [sql, params] = mocks.query.mock.calls[0] ?? [];
+    expect(String(sql)).toContain("status = 'completed' AND created_at < now()");
+    expect(String(sql)).toContain("status = 'in_progress' AND created_at < now()");
+    expect(params).toEqual([24, 60]);
+
+    vi.resetAllMocks();
+    mocks.query.mockResolvedValueOnce({ rowCount: null, rows: [] });
+    await expect(
+      new IdempotencyStore(pool).cleanupIdempotencyKeys({ retentionHours: 24, staleInProgressMinutes: 60 })
+    ).resolves.toBe(0);
+  });
 });

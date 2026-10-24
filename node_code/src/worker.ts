@@ -6,6 +6,11 @@ import { dispatchWebhookOutbox, dispatchWebhookReplays, processWebhookEvent, pro
 import { createShutdown, installShutdownSignals, startSerialPoll } from './runtime.js';
 import { safeError, safeJobError } from './logging.js';
 
+// An in-progress idempotency record older than this belongs to a handler that died
+// mid-request; releasing it lets clients retry instead of getting 409 forever.
+const STALE_IN_PROGRESS_MINUTES = 60;
+const CLEANUP_INTERVAL_MS = 15 * 60 * 1000;
+
 async function main(): Promise<void> {
   const config = loadConfig();
   const database = new Database(config.DATABASE_URL);
@@ -55,12 +60,28 @@ async function main(): Promise<void> {
     onError: (error) => console.error('Webhook outbox poll failed', safeError(error))
   });
 
+  const idempotencyCleanup = startSerialPoll({
+    run: async () => {
+      const deleted = await database.cleanupIdempotencyKeys({
+        retentionHours: config.IDEMPOTENCY_RETENTION_HOURS ?? 24,
+        staleInProgressMinutes: STALE_IN_PROGRESS_MINUTES
+      });
+      if (deleted > 0) console.info(`Deleted ${deleted} expired idempotency records`);
+    },
+    intervalMs: CLEANUP_INTERVAL_MS,
+    onError: (error) => console.error('Idempotency retention cleanup failed', safeError(error))
+  });
+
   const shutdown = createShutdown({
-    stop: outboxPoll.stop,
+    stop: () => {
+      outboxPoll.stop();
+      idempotencyCleanup.stop();
+    },
     steps: [
       // Stop taking new jobs immediately; pause locally without waiting for active jobs.
       () => worker.pause(true),
       outboxPoll.drain,
+      idempotencyCleanup.drain,
       () => worker.close(),
       () => eventQueue.close(),
       () => database.close()

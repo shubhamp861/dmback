@@ -27,7 +27,8 @@ product decisions, or Meta approval.
 
 - `[x]` Strict TypeScript Node.js service using Fastify, Zod, PostgreSQL, Redis,
   and BullMQ.
-- `[x]` Docker Compose definition for PostgreSQL 16 and Redis 7.
+- `[x]` Native Windows PostgreSQL and Redis/Memurai setup with PowerShell
+  startup and validation scripts.
 - `[x]` Initial SQL schema for workspaces, users, memberships, Instagram
   accounts, media, flows, automations, contacts, webhook events, trigger events,
   messages, usage counters, and audit logs.
@@ -99,11 +100,11 @@ These decisions should be resolved before the related implementation begins.
 ## P0-001 — Verify the complete local runtime
 
 **Status:** `[~] Partial`  
-**Dependencies:** Docker, Node.js 20+, project `.env`
+**Dependencies:** Native PostgreSQL and Redis/Memurai, Node.js 20+, project `.env`
 
 ### Work
 
-- Start PostgreSQL and Redis with `docker compose up -d --wait`.
+- Start the native PostgreSQL and Redis/Memurai Windows services.
 - Run `npm run db:migrate` and `npm run db:seed`.
 - Start the API and worker in separate terminals.
 - Verify health, login, authenticated automation listing, signed webhook
@@ -132,17 +133,6 @@ npm run dev:worker
 npm run webhook:smoke
 ```
 
-Docker alternative for the infrastructure portion:
-
-```bash
-docker compose up -d --wait
-npm run db:migrate
-npm run db:seed
-npm run dev
-npm run dev:worker
-npm run webhook:smoke
-```
-
 ### Current verification result
 
 The native runtime path was verified on 2026-10-17 after configuring the local
@@ -150,8 +140,7 @@ The native runtime path was verified on 2026-10-17 after configuring the local
 seed completed, Redis returned `PONG`, API health returned
 `{"status":"ok","database":"up"}`, the signed webhook returned HTTP 200,
 and the worker recorded one `queued` `guide` trigger after duplicate delivery.
-The Docker-specific path and dependency-failure recovery scenarios still need
-separate verification.
+Dependency-failure and recovery scenarios still need separate verification.
 
 ## P0-002 — Add database migration tracking
 
@@ -188,7 +177,7 @@ separate verification.
 
 ### Still required
 
-- Run the migration and status commands against PostgreSQL in Docker/CI.
+- Run the migration and status commands against native PostgreSQL and in CI.
 - Add a CI integration check covering a fresh database, rerun, new migration, and
   checksum failure.
 
@@ -270,7 +259,7 @@ separate verification.
   operations have finite timeouts, and connection errors have listeners.
 - Unit/Fastify injection checks cover readiness success/failure/timeouts,
   polling drain/non-overlap, and shutdown ordering/idempotency/deadline.
-- Still required: live Windows Docker dependency outage/recovery, OS-signal
+- Still required: live native-service outage/recovery, OS-signal
   checks with active jobs, and independent confirmation of recovery after a
   forced shutdown. Do not treat mock-based checks as those live results.
 
@@ -290,7 +279,7 @@ separate verification.
 - Liveness stays available when a dependency is unavailable.
 - Readiness returns non-2xx when PostgreSQL or Redis is unavailable.
 - SIGTERM does not abandon an active job without a retry/recovery record.
-- Container orchestration can use the two endpoints correctly.
+- A process manager or reverse proxy can use the two endpoints correctly.
 
 ## P0-005 — Harden configuration and secrets
 
@@ -459,8 +448,9 @@ management, and audit recording remain pending.
 
 ### Update — 2026-10-19
 
-- Added a dedicated `test:integration` Vitest suite and disposable Windows
-  Docker test services, separate ports/data from development infrastructure.
+- Added a dedicated `test:integration` Vitest suite using a disposable `*_test`
+  database on native PostgreSQL and Redis logical database `/15`, separate from
+  development data.
 - CI now provisions PostgreSQL 16/Redis 7 for a separate integration job.
 - Worker processing/outbox dispatch are reusable functions shared by production
   and integration tests. Optional `QUEUE_PREFIX` isolates each run's Redis jobs.
@@ -470,9 +460,9 @@ management, and audit recording remain pending.
 - Safeguards require a database ending `_test` and Redis DB `/15`; random SQL
   schemas/queue prefixes prevent collision, and cleanup never flushes Redis.
 - Typecheck/build and 206 unit/HTTP-double tests passed. Integration execution
-  previously failed during setup with `ECONNREFUSED 127.0.0.1:55432`; test services/Docker
-  are unavailable in the automation environment. These real-service scenarios
-  are implemented but NOT recorded as passed. Run the README Windows commands.
+  previously failed during setup because the native test PostgreSQL service was
+  unreachable from the automation environment. These real-service scenarios are
+  implemented but NOT recorded as passed. Run the README Windows commands.
 - Still pending: successful live suite/CI receipt, real server restart/failover
   and active-job OS-signal tests, mock Meta server scenarios, k6 load tests,
   migration-runner history integration, and real Meta staging test plan.
@@ -1158,7 +1148,7 @@ defaults and scope names must be confirmed in the Meta dashboard before staging.
 - Add managed Postgres backups and point-in-time recovery.
 - Add Redis persistence/failover appropriate to queue requirements.
 - Test restore and failover quarterly.
-- Add dependency/container scanning in CI.
+- Add dependency vulnerability scanning in CI.
 
 ### Acceptance criteria
 
@@ -1180,7 +1170,7 @@ defaults and scope names must be confirmed in the Meta dashboard before staging.
   and policy-block scenarios.
 - Run k6 webhook load tests at the agreed target volume.
 - Test payment webhook replay after billing integration.
-- Complete security review and dependency/container scan.
+- Complete security review and dependency vulnerability scan.
 
 ### Acceptance criteria
 

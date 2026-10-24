@@ -543,4 +543,42 @@ describe('real PostgreSQL, Redis, Fastify and worker integration', () => {
       expect(status.rows[0]).toEqual({ processing_status: 'failed', last_processing_error: 'WEBHOOK_PROCESSING_FAILED' });
     } finally { await context.database.pool.query('UPDATE ig_accounts SET workspace_id = $1 WHERE id = $2', [owner.workspaceId, accountId]); }
   });
+
+  it('retains recent idempotency records and deletes expired and stuck ones', async () => {
+    const pool = context.database.pool;
+    const workspaceId = (await pool.query<{ id: string }>('SELECT id FROM workspaces LIMIT 1')).rows[0]?.id;
+    const userId = (await pool.query<{ id: string }>('SELECT id FROM users LIMIT 1')).rows[0]?.id;
+    expect(workspaceId).toBeTruthy();
+    expect(userId).toBeTruthy();
+    const fingerprint = 'a'.repeat(64);
+    const suffix = randomUUID();
+    const recent = `recent-${suffix}`;
+    const expired = `expired-${suffix}`;
+    const stuck = `stuck-${suffix}`;
+    const keys = [workspaceId, userId, fingerprint] as const;
+
+    await pool.query(
+      `INSERT INTO idempotency_keys (workspace_id, user_id, key, request_fingerprint, status, response_status, response_body, completed_at)
+       VALUES ($1, $2, $3, $4, 'completed', 201, '{"ok":true}'::jsonb, now())`,
+      [keys[0], keys[1], recent, keys[2]]
+    );
+    await pool.query(
+      `INSERT INTO idempotency_keys (workspace_id, user_id, key, request_fingerprint, status, response_status, response_body, completed_at, created_at)
+       VALUES ($1, $2, $3, $4, 'completed', 201, '{"ok":true}'::jsonb, now() - interval '25 hours', now() - interval '25 hours')`,
+      [keys[0], keys[1], expired, keys[2]]
+    );
+    await pool.query(
+      `INSERT INTO idempotency_keys (workspace_id, user_id, key, request_fingerprint, status, created_at)
+       VALUES ($1, $2, $3, $4, 'in_progress', now() - interval '2 hours')`,
+      [keys[0], keys[1], stuck, keys[2]]
+    );
+
+    const deleted = await context.database.cleanupIdempotencyKeys({ retentionHours: 24, staleInProgressMinutes: 60 });
+    expect(deleted).toBeGreaterThanOrEqual(2);
+
+    const remaining = (await pool.query<{ key: string }>(
+      'SELECT key FROM idempotency_keys WHERE key = ANY($1)', [[recent, expired, stuck]]
+    )).rows.map((row) => row.key);
+    expect(remaining).toEqual([recent]);
+  });
 });

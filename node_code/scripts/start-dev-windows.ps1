@@ -7,7 +7,6 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$ComposeFile = Join-Path $ProjectRoot 'docker-compose.yml'
 
 function Fail {
     param([string]$Message)
@@ -31,52 +30,65 @@ function Invoke-External {
     }
 }
 
-function Start-DockerDesktop {
-    if (Test-DockerReady) {
-        return
-    }
+function Test-TcpPort {
+    param(
+        [string]$HostName = '127.0.0.1',
+        [int]$Port
+    )
 
-    $running = Get-Process -Name 'Docker Desktop' -ErrorAction SilentlyContinue
-    if ($running) { return }
-
-    $candidates = @(
-        (Join-Path ${env:ProgramFiles} 'Docker\Docker\Docker Desktop.exe'),
-        (Join-Path ${env:ProgramFiles(x86)} 'Docker\Docker\Docker Desktop.exe'),
-        (Join-Path ${env:LOCALAPPDATA} 'Docker\Docker Desktop.exe'),
-        (Join-Path ${env:LOCALAPPDATA} 'Docker\Docker\Docker Desktop.exe')
-    ) | Where-Object { $_ -and (Test-Path $_ -PathType Leaf) } | Select-Object -Unique
-
-    if ($candidates.Count -gt 0) {
-        Write-Step 'Starting Docker Desktop'
-        try {
-            Start-Process -FilePath $candidates[0] | Out-Null
-        } catch {
-            Write-Warning "Docker Desktop could not be started automatically from '$($candidates[0])'. Start it manually."
-        }
-    } else {
-        Write-Warning 'Docker Desktop executable was not found in standard paths. Start Docker Desktop manually, then this script will continue waiting for its engine.'
-    }
-}
-
-function Test-DockerReady {
-    $previousErrorActionPreference = $ErrorActionPreference
     try {
-        $ErrorActionPreference = 'Continue'
-        & docker info 1>$null 2>$null
-        return ($LASTEXITCODE -eq 0)
-    } finally {
-        $ErrorActionPreference = $previousErrorActionPreference
+        $client = New-Object System.Net.Sockets.TcpClient
+        $task = $client.ConnectAsync($HostName, $Port)
+        if (-not $task.Wait(2000)) {
+            $client.Close()
+            return $false
+        }
+        $client.Close()
+        return $true
+    } catch {
+        return $false
     }
 }
 
-if (-not (Test-Path $ComposeFile)) {
-    Fail "docker-compose.yml was not found at $ComposeFile"
+function Start-NativeService {
+    param(
+        [string[]]$CandidateNames,
+        [string]$Label
+    )
+
+    foreach ($name in $CandidateNames) {
+        $service = Get-Service -Name $name -ErrorAction SilentlyContinue
+        if ($service) {
+            if ($service.Status -ne 'Running') {
+                Write-Step "Starting Windows service '$name' for $Label"
+                try {
+                    Start-Service -Name $name -ErrorAction Stop
+                } catch {
+                    Write-Warning "Could not start '$name'. Start it manually (administrator rights may be required): $($_.Exception.Message)"
+                }
+            }
+            return
+        }
+    }
+    Write-Warning "No installed Windows service found for $Label; assuming it is already listening."
 }
+
+function Wait-NativeInfrastructure {
+    Start-NativeService -CandidateNames @('postgresql-x64-18', 'postgresql-x64-17', 'postgresql-x64-16', 'postgresql-x64-15', 'postgresql-x64-14', 'postgresql', 'pgsql') -Label 'PostgreSQL'
+    Start-NativeService -CandidateNames @('Memurai', 'Redis', 'redis') -Label 'Redis'
+
+    Write-Step 'Waiting for PostgreSQL on 127.0.0.1:5432 and Redis on 127.0.0.1:6379'
+    for ($attempt = 1; $attempt -le 30; $attempt++) {
+        if ((Test-TcpPort -Port 5432) -and (Test-TcpPort -Port 6379)) {
+            return
+        }
+        Start-Sleep -Seconds 1
+    }
+    Fail 'PostgreSQL and/or Redis did not become reachable on 127.0.0.1:5432 and 127.0.0.1:6379.'
+}
+
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     Fail 'npm is unavailable. Run scripts/bootstrap-windows.ps1 first.'
-}
-if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
-    Fail 'Docker CLI is unavailable. Run scripts/bootstrap-windows.ps1 first.'
 }
 if (-not (Test-Path (Join-Path $ProjectRoot '.env') -PathType Leaf)) {
     Fail '.env is missing. Run scripts/bootstrap-windows.ps1 first; its existing .env is preserved.'
@@ -86,29 +98,8 @@ if (-not (Test-Path (Join-Path $ProjectRoot 'node_modules\.bin\tsx') -PathType L
 }
 
 Set-Location $ProjectRoot
-New-Item -ItemType Directory -Force -Path (Join-Path $ProjectRoot '.docker-data\postgres') | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $ProjectRoot '.docker-data\redis') | Out-Null
-Start-DockerDesktop
 
-Write-Step 'Waiting for Docker Desktop'
-$dockerReady = $false
-for ($attempt = 1; $attempt -le 60; $attempt++) {
-    if (Test-DockerReady) {
-        $dockerReady = $true
-        break
-    }
-    Start-Sleep -Seconds 2
-}
-if (-not $dockerReady) {
-    Fail 'Docker Desktop is not ready. Start it, wait for the Linux engine, and rerun this command.'
-}
-
-Write-Step 'Starting PostgreSQL and Redis containers'
-Invoke-External 'docker' @('compose', '--file', $ComposeFile, 'up', '-d', '--wait')
-
-Write-Step 'Verifying PostgreSQL and Redis'
-Invoke-External 'docker' @('compose', '--file', $ComposeFile, 'exec', '-T', 'postgres', 'pg_isready', '-U', 'instagram', '-d', 'instagram_automation')
-Invoke-External 'docker' @('compose', '--file', $ComposeFile, 'exec', '-T', 'redis', 'redis-cli', 'ping')
+Wait-NativeInfrastructure
 
 if (-not $SkipDbSetup) {
     Write-Step 'Applying migrations and seed data'

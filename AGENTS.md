@@ -13,14 +13,14 @@
 - Run the normal local gate in this order: `npm run typecheck`, `npm test`, `npm run build`.
 - Run one focused test with `node node_modules/vitest/vitest.mjs run tests/<name>.test.ts`.
 - The integration suite is `npm run test:integration`; it uses `vitest.integration.config.ts`, one worker, and serial files with 30-second test/hook timeouts.
-- CI runs `npm ci`, `npm run typecheck`, `npm test`, `npm run build`, and `npm run test:integration`; verify the working directory when changing CI because the package is nested under `node_code/`.
+- CI runs `npm ci`, `npm run typecheck`, `npm test`, and `npm run build`; verify the working directory when changing CI because the package is nested under `node_code/`.
 
 ## Integration services
 
 - Integration tests must use a dedicated PostgreSQL database whose name ends in `_test` and Redis logical database `/15`; never use the development database or Redis database.
 - Set `TEST_DATABASE_URL` and `TEST_REDIS_URL` explicitly for native services, for example PostgreSQL on `127.0.0.1:5432` and Redis/Memurai on `127.0.0.1:6379`.
 - `npm run validate:native:windows` checks native PostgreSQL/Memurai, applies development migrations, then runs typecheck, build, unit tests, and integration tests.
-- `npm run test:integration:windows` is the disposable Docker path; it uses PostgreSQL port `15432` and Redis port `56379` by default, and cleans up containers afterward.
+- `npm run test:integration:windows` runs the suite against the native services; it derives the dedicated `*_test` database URL from `DATABASE_URL` in `.env` and uses Redis logical database `/15`.
 - Running bare `npm run test:integration` without services or test URLs commonly fails during setup with `ECONNREFUSED`; that means the integration environment was unavailable, not that assertions passed.
 
 ## Database and migrations
@@ -32,10 +32,10 @@
 
 ## Windows workflow and safety
 
-- Windows is the supported checkout environment. Prefer the native validation script when PostgreSQL/Memurai are already installed; Docker remains available through the disposable integration wrapper.
+- Windows is the supported checkout environment. PostgreSQL and Redis/Memurai run as native Windows services.
 - Start development with `npm run dev:windows` or the full P0 launcher `npm run dev:p0:windows`; start the worker separately with `npm run dev:worker` when using the plain API command.
 - Do not read, print, commit, or copy `.env` secrets, database passwords, API keys, or tokens. Use `.env.example` and `.env.production.example` as templates.
-- Do not reinstall or replace the existing Windows dependencies from automation. Keep generated `dist/`, `coverage/`, logs, `.env*`, and Docker data ignored by `node_code/.gitignore`.
+- Do not reinstall or replace the existing Windows dependencies from automation. Keep generated `dist/`, `coverage/`, logs, and `.env*` ignored by `node_code/.gitignore`.
 - Root `.gitignore` ignores workspace-private agent attachments under `.opencode/omnirush/inbox/`; do not add those generated files to commits.
 
 ## Source-of-truth notes
@@ -65,10 +65,19 @@
 - Start the backend API and worker separately when using plain development commands, then start the Vite frontend on port 3001; a frontend HTTP 200 only proves the Vite server responded, not that auth/database integration works.
 - Apply development migrations with `npm run db:migrate` before testing the OTP flow against a real database; never use the dedicated integration database for development data.
 
-## Unified production container
+## Production serving
 
-- The repository-root `Dockerfile` builds `react-code/` with Vite, builds `node_code/`, and copies the frontend output to the backend image at `/app/public`.
-- Production serving uses Fastify plus `@fastify/static`; `/v1/*`, `/health`, `/live`, and `/ready` remain backend routes, while browser `GET`/`HEAD` navigations fall back to the built `index.html`.
-- Root `docker-compose.yml` uses one image for the web app, migration job, and worker, plus PostgreSQL and Redis; the worker remains a separate process even though it shares the image.
-- The Compose `migrate` service must complete successfully before `app` or `worker` starts; use `scripts/start-production.sh` with a private `.env.production`.
+- The repository has no container configuration. Production serving uses Fastify plus `@fastify/static`; `/v1/*`, `/health`, `/live`, and `/ready` remain backend routes, while browser `GET`/`HEAD` navigations fall back to the built `index.html`.
 - Same-origin production should leave `VITE_API_BASE_URL` empty at frontend build time; the browser then calls the existing `/v1` API paths on the served origin.
+
+## Single-command local startup
+
+- From the repository root, `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-local-windows.ps1` creates `node_code/.env` if missing, installs both locked dependency graphs, waits for the native PostgreSQL/Redis services, runs the P0 API/worker startup, and starts the Vite frontend on port 3001.
+- Use `-SkipInstall` for an already-installed checkout, `-SkipDbSetup` when migrations/seed data are current, and `-RunTests` to run backend typecheck/unit/build checks after startup.
+
+## Windows batch shortcuts
+
+- `scripts\windows\firstboot.bat` performs first-time setup: prerequisite checks, `.env` creation when missing, backend and frontend dependency installation, migrations/seed, and startup.
+- `scripts\windows\run.bat` is the daily start; it assumes `.env`, dependencies, migrations, and seed data are already in place and skips API, worker, and frontend processes that are already running.
+- `scripts\windows\stop.bat` stops the API, worker, and frontend, leaving PostgreSQL and Memurai running. Use `powershell -File scripts\windows\stop.ps1 -IncludeServices` to stop those services too.
+- Append `/nopause` to a batch file for non-interactive use.

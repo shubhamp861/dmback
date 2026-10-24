@@ -6,7 +6,7 @@ Detailed actionable backlog: `devResource/BACKEND-PENDING-TASKS.md`.
 
 ## Project and current milestone
 
-- Working directory: `/home/shubham/dmlinl/backend`
+- Working directory: `C:\Drive-D\dmlinkProject\node_code`
 - Specification: `devResource/Backend-Specification-Instagram-Automation-Tool.pdf`
 - Product: Instagram comment-to-DM automation backend.
 - Stack implemented so far: Node.js, strict TypeScript, Fastify, Zod, PostgreSQL
@@ -51,8 +51,8 @@ Detailed actionable backlog: `devResource/BACKEND-PENDING-TASKS.md`.
 
 ### Current blockers
 
-- Live local runtime verification is not complete because Docker and host `psql`
-  were unavailable in the coding environment.
+- Live local runtime verification is not complete because native PostgreSQL was
+  unavailable in the coding environment.
 - The backend is intentionally PostgreSQL 16 plus Redis/BullMQ; Cassandra is not
   a drop-in replacement because the code and migrations use PostgreSQL pools,
   SQL, transactions, joins, locks, JSONB, and partitioning. The owner selected
@@ -72,8 +72,9 @@ Detailed actionable backlog: `devResource/BACKEND-PENDING-TASKS.md`.
 ### First actions when resuming
 
 1. Read this file and `devResource/BACKEND-PENDING-TASKS.md`.
-2. On a machine with Docker, run the local PostgreSQL/Redis migration, seed, API,
-   worker, and webhook smoke flow from the local-development section below.
+2. On the Windows development machine, run the local PostgreSQL/Redis migration,
+   seed, API, worker, and webhook smoke flow from the local-development section
+   below.
 3. Add integration tests for PostgreSQL, Redis, the transactional webhook outbox,
    duplicate delivery, Redis failure/recovery, and worker processing.
 4. Verify migration tracking against a fresh PostgreSQL database and implement
@@ -97,8 +98,7 @@ memory.
   error handler.
 - Separate API and matching-worker entry points: `src/server.ts` and
   `src/worker.ts`.
-- PostgreSQL 16 and Redis 7 services with volumes and health checks in
-  `docker-compose.yml`.
+- Native PostgreSQL and Redis/Memurai services for local development and tests.
 - GitHub Actions workflow for dependency installation, type checking, unit
   tests, and build.
 
@@ -200,10 +200,9 @@ The implementation session completed these checks successfully:
 - `npm run build`
 - `git diff --check`
 
-Docker and the host `psql` client were unavailable in this environment
-(`docker: command not found`, `psql: command not found`). Live PostgreSQL
-migration execution, Redis queue processing, HTTP integration tests, and real
-Meta integration have **not** been verified. Passing unit tests/build does not
+The host `psql` client and a running PostgreSQL service were unavailable in this
+environment. Live PostgreSQL migration execution, Redis queue processing, HTTP
+integration tests, and real Meta integration have **not** been verified. Passing unit tests/build does not
 establish those runtime behaviours. The commands below are setup instructions,
 not a record of successful local infrastructure execution.
 
@@ -218,7 +217,8 @@ environment blocker, not a project dependency-version failure.
 ### 1. Complete and stabilize the foundation
 
 - [~] Run the migration and an API-to-worker smoke test against PostgreSQL/Redis.
-  Attempted, but blocked here because Docker and host `psql` are unavailable.
+  Attempted, but blocked here because native PostgreSQL and host `psql` were
+  unavailable.
 - [ ] Add database/queue integration tests, including duplicate/concurrent
   deliveries and persistence/enqueue failures.
 - [~] Add a durable outbox or equivalent recovery mechanism so events can be
@@ -321,21 +321,20 @@ references a separate product specification; it has not been reviewed here.
 
 ## Run locally for development
 
-Run the following commands from `/home/shubham/dmlinl/backend`.
+Run the following commands from `C:\Drive-D\dmlinkProject\node_code`.
 
 ### 1. Prerequisites and configuration
 
-Install Node.js (the package currently requires 20+), npm, Docker Engine, and
-Docker Compose v2. Ensure Docker is running. The container-based migration
-command below does not require a host installation of `psql`.
+Install Node.js (the package currently requires 20+) and npm. PostgreSQL 16+ and
+Redis 7+/Memurai must be installed and running as native services.
 
-```bash
+```powershell
 node --version
 npm --version
-docker --version
-docker compose version
+Get-Service *postgres*
+Get-Service *memurai*
 npm ci
-test -f .env || cp .env.example .env
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
 Edit `.env` with these development values:
@@ -359,13 +358,15 @@ not. Keep `.env` out of version control.
 
 ### 2. Start PostgreSQL and Redis
 
-```bash
-docker compose up -d --wait
-docker compose ps
+Start the native services (use an elevated PowerShell when needed):
+
+```powershell
+Start-Service postgresql-x64-18
+Start-Service Memurai
 ```
 
 PostgreSQL uses port 5432; Redis uses 6379. If those ports are occupied, adjust
-the Compose host ports and corresponding `.env` URLs together.
+the service configuration and corresponding `.env` URLs together.
 
 ### 3. Apply the initial migration
 
@@ -375,15 +376,8 @@ The migration runner loads `.env`, uses a transaction, and stops on SQL errors:
 npm run db:migrate
 ```
 
-For a migration without a local `psql` client, use the PostgreSQL client inside
-the container:
-
-```bash
-docker compose exec -T postgres psql -U instagram -d instagram_automation -v ON_ERROR_STOP=1 --single-transaction < migrations/001_initial.sql
-```
-
-The initial migration is currently the only migration file; migration history
-tracking is still pending. Seed repeatable local data after the migration:
+Migrations are discovered in numeric filename order and tracked in
+`schema_migrations`. Seed repeatable local data after the migration:
 
 ```bash
 npm run db:seed
@@ -456,16 +450,14 @@ These scripts run `dist/src/server.js` and `dist/src/worker.js` after
 
 ### 7. Logs and shutdown
 
-```bash
-docker compose logs -f postgres redis
+Stop the API/worker/frontend terminals with Ctrl+C. Stop the native services
+from an elevated PowerShell if you need to free the ports:
+
+```powershell
+Stop-Service Memurai
+Stop-Service postgresql-x64-18
 ```
 
-Stop API/worker terminals with Ctrl+C, then stop the infrastructure:
-
-```bash
-docker compose down
-```
-
-Named volumes retain development data between runs. If Docker is unavailable,
-provide PostgreSQL 16 and Redis 7 separately, set their URLs in `.env`, and apply
-the SQL migration with a local `psql` client.
+Native service data persists between runs. Keep PostgreSQL 16+ and Redis 7+/
+Memurai installed, set their URLs in `.env`, and apply migrations with
+`npm run db:migrate`.

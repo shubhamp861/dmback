@@ -43,6 +43,13 @@ interface IdempotencyPool {
   query?<T extends QueryResultRow = QueryResultRow>(text: string, values?: unknown[]): Promise<QueryResult<T>>;
 }
 
+export interface IdempotencyCleanupOptions {
+  /** Completed records older than this are deleted. */
+  retentionHours: number;
+  /** In-progress records older than this are treated as abandoned and deleted. */
+  staleInProgressMinutes: number;
+}
+
 export class IdempotencyStore {
   constructor(private readonly pool: IdempotencyPool) {}
 
@@ -113,6 +120,17 @@ export class IdempotencyStore {
 
   async failIdempotency(id: string): Promise<void> {
     await this.abandonIdempotency(id);
+  }
+
+  /** Deletes expired completed records and stuck in-progress records; returns the deleted count. */
+  async cleanupIdempotencyKeys(options: IdempotencyCleanupOptions): Promise<number> {
+    const result = await this.poolQuery(
+      `DELETE FROM idempotency_keys
+        WHERE (status = 'completed' AND created_at < now() - ($1::int * interval '1 hour'))
+           OR (status = 'in_progress' AND created_at < now() - ($2::int * interval '1 minute'))`,
+      [options.retentionHours, options.staleInProgressMinutes]
+    );
+    return result.rowCount ?? 0;
   }
 
   private async poolQuery(text: string, values: unknown[]): Promise<QueryResult> {

@@ -18,40 +18,60 @@ automation service described in `devResource/Backend-Specification-Instagram-Aut
 
 ### Local setup overview
 
-Windows is the supported development environment for this checkout. Run backend
-commands from:
+Windows is the supported development environment. Everything runs natively:
+PostgreSQL, Redis/Memurai, the backend API, the BullMQ worker, and the Vite
+frontend. There are no containers.
+
+Run backend commands from:
 
 ```powershell
-Set-Location C:\Drive-D\dmlinkProject\backend
+Set-Location C:\Drive-D\dmlinkProject\node_code
 ```
 
-PostgreSQL and Redis run in Docker Desktop with their data stored under
-`backend/.docker-data/`. WSL-native PostgreSQL and Redis are not part of the
-supported setup.
+Run frontend commands from:
+
+```powershell
+Set-Location C:\Drive-D\dmlinkProject\react-code
+```
 
 The API and worker are separate processes. PostgreSQL is the database, Redis is
 the BullMQ queue backend, and the API does not start the worker automatically.
 
-## Initial boot: Windows with Docker Desktop
+### Quick start with batch files
+
+From the repository root, the batch files in `scripts\windows\` wrap the
+PowerShell launchers:
+
+| Command | Purpose |
+| --- | --- |
+| `scripts\windows\firstboot.bat` | One-time setup and start (prerequisites, dependencies, migrations, seed). |
+| `scripts\windows\run.bat` | Daily start; skips processes that are already running. |
+| `scripts\windows\stop.bat` | Stop API, worker, and frontend; leaves PostgreSQL and Memurai running. |
+
+Append `/nopause` for non-interactive use. Use
+`powershell -File scripts\windows\stop.ps1 -IncludeServices` to stop the
+PostgreSQL and Memurai services as well.
+
+## Initial boot: Windows
 
 For native Windows development, install or update **App Installer** from the
 Microsoft Store so that `winget` is available. Then open PowerShell and run the
-Windows onboarding script from the backend directory:
+Windows onboarding script from the `node_code` directory:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\bootstrap-windows.ps1
 ```
 
-The Windows script installs or verifies Git, Python 3, Node.js LTS/npm, and
-Docker Desktop with `winget`. It starts Docker Desktop, waits for Docker to be
-ready, creates a local `.env` only when one does not already exist,
-runs `npm ci`, starts the PostgreSQL/Redis containers with project-local data,
+The Windows script installs or verifies Git, Python 3, Node.js LTS/npm with
+`winget`, creates a local `.env` only when one does not already exist,
+runs `npm ci`, waits for the native PostgreSQL and Redis/Memurai services,
 applies migrations, inserts seed data, and runs typecheck, tests, and the build.
 
 It is safe to rerun and preserves an existing `.env`. If PowerShell still cannot
 find a tool immediately after `winget` installs it, close and reopen PowerShell
-and rerun the script. Docker Desktop must be running with Linux containers.
+and rerun the script. PostgreSQL and Redis/Memurai must already be installed as
+Windows services.
 
 The script is:
 
@@ -59,9 +79,9 @@ The script is:
 scripts/bootstrap-windows.ps1
 ```
 
-After onboarding, use the Windows-specific development command to start
-Docker Desktop's PostgreSQL and Redis containers, verify both services, apply
-local database setup, and run the API:
+After onboarding, use the Windows-specific development command to verify the
+native PostgreSQL and Redis services, apply local database setup, and run the
+API:
 
 ```powershell
 npm run dev:windows
@@ -75,7 +95,18 @@ current, skip that step with:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-dev-windows.ps1 -SkipDbSetup
 ```
 
-### If the PostgreSQL role already exists
+### Manual PostgreSQL setup
+
+PostgreSQL and Redis/Memurai must be installed and running as native Windows
+services. Start them from an elevated PowerShell when they are stopped; the
+exact PostgreSQL service name depends on the installed version:
+
+```powershell
+Get-Service *postgres*
+Get-Service *memurai*
+Start-Service postgresql-x64-18
+Start-Service Memurai
+```
 
 The expected local development database is:
 
@@ -85,56 +116,45 @@ PostgreSQL password: instagram
 Database: instagram_automation
 ```
 
-To explicitly reset this project role, run:
+Create it once with the `psql` client that ships with PostgreSQL. Replace
+`postgres` if your installation uses a different superuser role:
 
-```bash
-RESET_DB_PASSWORD=1 ./scripts/bootstrap.sh
+```powershell
+psql -U postgres -h 127.0.0.1 -c "CREATE ROLE instagram LOGIN PASSWORD 'instagram';"
+psql -U postgres -h 127.0.0.1 -c "CREATE DATABASE instagram_automation OWNER instagram;"
 ```
 
-If you only need to repair the database manually, use this PostgreSQL 18-safe
-command. PostgreSQL 18's `createdb` does not support `--if-not-exists`, so the
-database existence check is performed first:
+If the role or database already exists, repair it instead of recreating it:
 
-```bash
-sudo -u postgres psql -v ON_ERROR_STOP=1 -d postgres <<'SQL'
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'instagram') THEN
-    CREATE ROLE instagram LOGIN PASSWORD 'instagram';
-  ELSE
-    ALTER ROLE instagram WITH LOGIN PASSWORD 'instagram';
-  END IF;
-END
-$$;
-SQL
-
-DB_EXISTS=$(sudo -u postgres psql -d postgres -Atc \
-  "SELECT 1 FROM pg_database WHERE datname = 'instagram_automation';")
-if [ "${DB_EXISTS}" != "1" ]; then
-  sudo -u postgres createdb --owner=instagram instagram_automation
-fi
-
-PGPASSWORD=instagram psql -h 127.0.0.1 -U instagram \
-  -d instagram_automation -c 'SELECT current_user, current_database();'
+```powershell
+psql -U postgres -h 127.0.0.1 -c "ALTER ROLE instagram WITH LOGIN PASSWORD 'instagram';"
 ```
 
-### Initial boot with Docker
+Verify the connection:
 
-If Docker Compose v2 is installed, use:
+```powershell
+$env:PGPASSWORD = 'instagram'
+psql -h 127.0.0.1 -U instagram -d instagram_automation -c "SELECT current_user, current_database();"
+Remove-Item Env:PGPASSWORD
+```
 
-```bash
-cp .env.example .env
-chmod 600 .env
+### Configure and initialize the backend
+
+With PostgreSQL and Redis/Memurai running, from `node_code/`:
+
+```powershell
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 npm ci
-docker compose up -d --wait
 npm run db:migrate
 npm run db:migrate:status
 npm run db:seed
 ```
 
-Compose starts PostgreSQL 16 and Redis 7 with persistent named volumes. It does
-not start the API or worker. Do not run native PostgreSQL/Redis and Compose on
-the same ports at the same time.
+Edit `.env` if your PostgreSQL or Redis credentials/ports differ from the
+defaults in `.env.example`; do not overwrite an existing `.env` because it holds
+local secrets. The services must already be listening on
+`127.0.0.1:5432` and `127.0.0.1:6379`; these steps do not start the API or
+worker.
 
 Migration files are discovered from `migrations/` in numeric filename order. The
 runner records each applied file and its SHA-256 checksum in `schema_migrations`,
@@ -174,14 +194,50 @@ These credentials and generated local secrets are for development only.
 
 ## Start the app for local testing
 
-From PowerShell, start Docker Desktop infrastructure, migrations, seed data,
-and the API with:
+### Run the stack manually
+
+PostgreSQL and Redis/Memurai must already be running. Open three terminals from
+the repository root.
+
+Terminal 1 - backend API:
+
+```powershell
+Set-Location C:\Drive-D\dmlinkProject\node_code
+npm run dev
+```
+
+Terminal 2 - BullMQ worker (required for webhook matching):
+
+```powershell
+Set-Location C:\Drive-D\dmlinkProject\node_code
+npm run dev:worker
+```
+
+Terminal 3 - frontend:
+
+```powershell
+Set-Location C:\Drive-D\dmlinkProject\react-code
+npm ci
+npm run dev
+```
+
+The API listens on `http://localhost:3000`, the worker uses the same PostgreSQL
+and Redis services, and Vite serves the frontend on
+`http://localhost:3001`. Open the frontend at that exact origin: the backend
+`WEB_ORIGIN` defaults to `http://localhost:3001`, and mixing `localhost` with
+`127.0.0.1` breaks browser cookies and CORS. Run `npm ci` in `react-code/` only
+the first time.
+
+### Optional Windows shortcuts
+
+The PowerShell scripts wrap the native service checks, database setup, API, and
+worker:
 
 ```powershell
 npm run dev:windows
 ```
 
-For the complete P0 development startup—including Docker checks, migrations,
+For the complete P0 development startup—including service checks, migrations,
 seed data, API, worker, and readiness verification—use the single Windows
 command:
 
@@ -189,10 +245,10 @@ command:
 npm run dev:p0:windows
 ```
 
-Docker Desktop must be installed. The script starts Docker Desktop when it can
-find the standard installation paths and waits up to two minutes for the Linux
-engine. If Docker Desktop is installed elsewhere, start it manually and wait
-until its status says the engine is running, then rerun the command.
+The script starts the native Windows services when they are stopped (which may
+require an elevated PowerShell), then waits for PostgreSQL on `127.0.0.1:5432`
+and Redis on `127.0.0.1:6379`. If a service is not installed, start it manually
+and rerun the command.
 
 This starts the API and worker in separate PowerShell windows. It does not run
 the full test suite by default. To also run typecheck, unit tests, and build:
@@ -223,8 +279,8 @@ npm run dev:worker
 The API listens on `http://127.0.0.1:3000`. Verify the local services with:
 
 ```powershell
-docker compose exec postgres pg_isready -U instagram -d instagram_automation
-docker compose exec redis redis-cli ping
+Test-NetConnection -ComputerName 127.0.0.1 -Port 5432
+Test-NetConnection -ComputerName 127.0.0.1 -Port 6379
 Invoke-WebRequest http://127.0.0.1:3000/health
 ```
 
@@ -493,7 +549,7 @@ current foundation records the match only; it does not send a real Instagram DM.
 
 ## Local project checks
 
-Run these checks from the backend directory:
+Run these checks from the `node_code` directory:
 
 ```bash
 npm run typecheck
@@ -506,35 +562,33 @@ migrations, OAuth URL behavior, webhook signatures, and token encryption.
 
 ### Isolated PostgreSQL/Redis integration tests (Windows)
 
-With Docker Desktop running, from `C:\Drive-D\dmlinkProject\backend`:
+With native PostgreSQL and Redis/Memurai running, from `C:\Drive-D\dmlinkProject\node_code`:
 
 ```cmd
-npm run test:infra:up
 npm run test:integration
-npm run test:infra:down
 ```
 
-The same Windows sequence, including cleanup even when the test fails, is
+The same sequence with the test environment prepared automatically is
 available as:
 
 ```cmd
 npm run test:integration:windows
 ```
 
-If the default PostgreSQL port is reserved, pass an alternate port:
+That script derives `TEST_DATABASE_URL` from `DATABASE_URL` in `.env` by
+swapping only the database name for the dedicated `*_test` database, and sets
+`TEST_REDIS_URL` to `redis://127.0.0.1:6379/15`. No credentials are written to
+the repository. Override either value explicitly when needed:
 
 ```cmd
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-integration-windows.ps1 -PostgresPort 15433
+set TEST_DATABASE_URL=postgres://YOUR_USER:YOUR_PASSWORD@127.0.0.1:5432/instagram_automation_test
+set TEST_REDIS_URL=redis://127.0.0.1:6379/15
+npm run test:integration
 ```
 
-These commands use `docker-compose.test.yml`, **not** the development Compose
-file. Test PostgreSQL listens on `127.0.0.1:15432` by default and Redis on
-`127.0.0.1:56379`. Test storage is disposable; no development bind mounts are
-attached. The API and normal worker do not need to be stopped.
-If Windows reserves the default PostgreSQL port, set the same alternate port
-for Compose and the test process, for example
-`set TEST_POSTGRES_PORT=15433` and
-`set TEST_DATABASE_URL=postgres://integration:integration-only@127.0.0.1:15433/instagram_automation_test`.
+The suite runs against a dedicated database ending in `_test` and Redis logical
+database `/15`, never the development database. The API and normal worker do
+not need to be stopped.
 
 The integration suite uses real SQL, Fastify HTTP injection and a real BullMQ
 worker to check:
@@ -554,12 +608,13 @@ in `_test`) and `TEST_REDIS_URL` (Redis database `/15`). The test user needs
 permission to create/drop schemas and create `pgcrypto` in that test database.
 Every run gets a random SQL schema and BullMQ prefix; cleanup drops only that
 schema and queue namespace. There is no `FLUSHDB` or developer-data truncation.
-If the process is force-killed, leftover test namespaces may remain until the
-disposable test containers are removed.
+If the process is force-killed, leftover test namespaces may remain in the
+test database until they are dropped manually.
 
 `npm test` runs unit/HTTP-double tests only. `npm run test:integration` is a
 separate required check and fails, rather than silently passing, when test
-services are missing. CI has a dedicated job with PostgreSQL 16 and Redis 7.
+services are missing. CI runs `npm ci`, typecheck, unit tests, and build; run
+the integration suite locally.
 The integration suite simulates a transport failure, not a real Redis server
 restart, disk loss, or an OS-signal shutdown with active jobs; those checks are
 still pending.

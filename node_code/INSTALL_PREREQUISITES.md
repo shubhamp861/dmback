@@ -14,9 +14,9 @@ Cassandra is not required and is not supported by this backend. The application
 uses PostgreSQL-specific SQL, transactions, joins, JSONB, row locks, and
 partitioning.
 
-## Windows setup with Docker Desktop
+## Windows setup with native services
 
-Windows development uses Docker Desktop for PostgreSQL and Redis. Install or
+Windows development uses native PostgreSQL and Redis/Memurai services. Install or
 update **App Installer** from the Microsoft Store so that `winget` is available,
 then open PowerShell in the backend directory:
 
@@ -26,27 +26,27 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\bootstrap-windows.ps1
 ```
 
-The script installs or verifies Git, Python 3, Node.js LTS/npm, and Docker
-Desktop; starts Docker Desktop; waits for its Linux engine; creates `.env` only
-when missing; installs npm dependencies; starts PostgreSQL and Redis with data
-under `backend/.docker-data/`; runs migrations and seed data; and runs
-typecheck, tests, and the build.
+The script installs or verifies Git, Python 3, Node.js LTS/npm; creates `.env`
+only when missing; installs npm dependencies; waits for the native PostgreSQL
+and Redis/Memurai services; runs migrations and seed data; and runs typecheck,
+tests, and the build.
 
-The script is safe to rerun and preserves an existing `.env`. Docker Desktop
-must be running with Linux containers. If a newly installed command is not
-available in the current PowerShell session, close PowerShell, open a new one,
-and rerun the script.
+The script is safe to rerun and preserves an existing `.env`. PostgreSQL and
+Redis/Memurai must already be installed as Windows services. If a newly
+installed command is not available in the current PowerShell session, close
+PowerShell, open a new one, and rerun the script.
 
-After onboarding, start the Windows Docker services and API from PowerShell
-with:
+After onboarding, start the Windows services check, database setup, and API
+from PowerShell with:
 
 ```powershell
 npm run dev:windows
 ```
 
-This starts Docker Desktop when it is installed, waits for its Linux engine,
-starts PostgreSQL and Redis with Compose, verifies both containers, applies
-migrations and seed data, and runs the API in the foreground. To skip database
+This starts the native services when they are stopped (an elevated PowerShell
+may be required), waits for PostgreSQL on `127.0.0.1:5432` and Redis on
+`127.0.0.1:6379`, applies migrations and seed data, and runs the API in the
+foreground. To skip database
 setup when the database is already current, use
 `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-dev-windows.ps1 -SkipDbSetup`.
 Run `npm run dev:worker` in a second PowerShell window for the worker.
@@ -73,8 +73,7 @@ and database; creates `.env` only when it is missing; installs locked npm
 dependencies; runs migrations and seed data; and runs the typecheck, test, and
 build checks. It never overwrites an existing `.env`.
 
-The script uses native Ubuntu/Debian services. Use the Docker Compose steps in
-the manual setup below instead if you want PostgreSQL and Redis in containers.
+The script uses native Ubuntu/Debian services.
 
 For a different local PostgreSQL name or role, set these environment variables
 before running it. Passwords must be URL-safe because the script writes the
@@ -287,12 +286,7 @@ npm run dev:all
 ```
 
 This starts the API in the foreground. Start the worker separately with
-`npm run dev:worker`. To use Docker Compose for PostgreSQL and Redis instead of
-native services, run:
-
-```bash
-INFRA_MODE=docker npm run dev:all
-```
+`npm run dev:worker`.
 
 In terminal 3, run the checks:
 
@@ -329,16 +323,15 @@ npm test
 npm run build
 ```
 
-For the Windows Docker integration suite, start its separate disposable test
-services (ports 15432 and 56379 by default), run tests, then stop them:
+For the Windows integration suite, make sure the native PostgreSQL and Redis
+services are running, then run:
 
 ```cmd
-npm run test:infra:up
-npm run test:integration
-npm run test:infra:down
+npm run test:integration:windows
 ```
 
-These services do not use `backend/.docker-data` or the development database.
+The suite uses a dedicated database ending in `_test` and Redis logical
+database `/15`. It does not use the development database.
 Do not point the integration suite at development or production databases.
 See the README's isolated integration test section for safeguards and coverage.
 

@@ -27,6 +27,7 @@ const envSchema = z.object({
   RATE_LIMIT_USER_MAX: z.coerce.number().int().positive().max(100000).optional(),
   RATE_LIMIT_WORKSPACE_MAX: z.coerce.number().int().positive().max(100000).optional(),
   RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().positive().max(86400).optional(),
+  IDEMPOTENCY_RETENTION_HOURS: z.coerce.number().int().positive().max(8760).optional(),
   META_APP_ID: z.string().min(1).default('development-app-id'),
   META_APP_SECRET: z.string().min(1).default('development-app-secret'),
   META_REDIRECT_URI: z.string().url().default('http://localhost:3000/v1/auth/instagram/callback'),

@@ -10,7 +10,8 @@ import {
   IdempotencyStore,
   type BeginIdempotencyInput,
   type BeginIdempotencyResult,
-  type IdempotencyBody
+  type IdempotencyBody,
+  type IdempotencyCleanupOptions
 } from './idempotency.js';
 import { hashSignupOtp } from './email-verification.js';
 
@@ -201,6 +202,10 @@ export class Database {
 
   async failIdempotency(id: string): Promise<void> {
     return this.idempotency.failIdempotency(id);
+  }
+
+  async cleanupIdempotencyKeys(options: IdempotencyCleanupOptions): Promise<number> {
+    return this.idempotency.cleanupIdempotencyKeys(options);
   }
 
   async insertWebhookEvent(payload: InstagramWebhookPayload, payloadHash: string): Promise<WebhookEventRecord> {
